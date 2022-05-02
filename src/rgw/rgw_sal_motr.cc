@@ -1772,7 +1772,7 @@ int MotrObject::create_mobj(const DoutPrefixProvider *dpp, uint64_t sz)
   m0_obj_init(mobj, &store->container.co_realm, &meta.oid, lid);
 
   struct m0_op *op = nullptr;
-  mobj->ob_entity.en_flags |= M0_ENF_META;
+   mobj->ob_entity.en_flags |= (M0_ENF_META | M0_ENF_GEN_DI);
   rc = m0_entity_create(nullptr, &mobj->ob_entity, &op);
   if (rc != 0) {
     this->close_mobj();
@@ -1830,7 +1830,7 @@ int MotrObject::open_mobj(const DoutPrefixProvider *dpp)
   struct m0_op *op = nullptr;
   mobj->ob_attr.oa_layout_id = meta.layout_id;
   mobj->ob_attr.oa_pver      = meta.pver;
-  mobj->ob_entity.en_flags  |= M0_ENF_META;
+  mobj->ob_entity.en_flags  |= (M0_ENF_META | M0_ENF_GEN_DI);
   rc = m0_entity_open(&mobj->ob_entity, &op);
   if (rc != 0) {
     ldpp_dout(dpp, 0) << "ERROR: m0_entity_open() failed: rc=" << rc << dendl;
@@ -1874,7 +1874,7 @@ int MotrObject::delete_mobj(const DoutPrefixProvider *dpp)
 
   // Create an DELETE op and execute it (sync version).
   struct m0_op *op = nullptr;
-  mobj->ob_entity.en_flags |= M0_ENF_META;
+  mobj->ob_entity.en_flags |= (M0_ENF_META | M0_ENF_GEN_DI);
   rc = m0_entity_delete(&mobj->ob_entity, &op);
   if (rc != 0) {
     ldpp_dout(dpp, 0) << "ERROR: m0_entity_delete() failed: " << rc << dendl;
@@ -1969,7 +1969,7 @@ int MotrObject::write_mobj(const DoutPrefixProvider *dpp, bufferlist&& in_buffer
       // This is the last I/O.
       // Pad to allign with unit size (and not the group size) and 
       // set M0_ENF_NO_RMW flag to force no RMW
-      mobj->ob_entity.en_flags |= M0_ENF_NO_RMW;
+      mobj->ob_entity.en_flags |= (M0_ENF_NO_RMW | M0_ENF_GEN_DI);
       uint64_t lid = M0_OBJ_LAYOUT_ID(meta.layout_id);
       unsigned unit_sz = m0_obj_layout_id_to_unit_size(lid);
 
@@ -2466,7 +2466,7 @@ int MotrAtomicWriter::write()
     if (left < bs) {
       // Pad to allign with unit size (and not the group size) and 
       // set M0_ENF_NO_RMW flag to force no RMW
-      obj.mobj->ob_entity.en_flags |= M0_ENF_NO_RMW;
+      obj.mobj->ob_entity.en_flags |= (M0_ENF_NO_RMW | M0_ENF_GEN_DI);
       uint64_t lid = M0_OBJ_LAYOUT_ID(obj.meta.layout_id);
       unsigned unit_sz = m0_obj_layout_id_to_unit_size(lid);
 
