@@ -1985,6 +1985,7 @@ int MotrObject::write_mobj(const DoutPrefixProvider *dpp, bufferlist&& in_buffer
     attr.ov_vec.v_count[0] = 0;
 
     op = nullptr;
+    this->mobj->ob_entity.en_flags |= M0_ENF_GEN_DI;
     rc = m0_obj_op(this->mobj, M0_OC_WRITE, &ext, &buf, &attr, 0, 0, &op);
     if (rc != 0)
       goto out;
@@ -2068,7 +2069,7 @@ int MotrObject::read_mobj(const DoutPrefixProvider* dpp, int64_t off, int64_t en
     }
     if( bloff != 0 )
 	bloff = start - block_start_off;
-
+    this->mobj->ob_entity.en_flags |= M0_ENF_GEN_DI;
     rc = m0_obj_op(this->mobj, M0_OC_READ, &ext, &buf, &attr, 0, 0, &op);
     ldpp_dout(dpp, 20) << "MotrObject::read_mobj(): init read op rc=" << rc << dendl;
     if (rc != 0) {
@@ -2486,6 +2487,7 @@ int MotrAtomicWriter::write()
     left -= this->populate_bvec(bs, bi);
 
     op = nullptr;
+    obj.mobj->ob_entity.en_flags |= M0_ENF_GEN_DI;
     rc = m0_obj_op(obj.mobj, M0_OC_WRITE, &ext, &buf, &attr, 0, 0, &op);
     if (rc != 0)
       goto err;
