@@ -252,6 +252,14 @@ options:
   services:
   - rgw
   with_legacy: true
+- name: rgw_user_policy_limit
+  type: uint
+  level: advanced
+  desc: Max limit of total aggregate policy size for a user.
+  default: 2048
+  services:
+  - rgw
+  with_legacy: true
 - name: rgw_cache_enabled
   type: bool
   level: advanced
@@ -3297,6 +3305,13 @@ options:
   type: bool
   level: advanced
   desc: Set to true when Motr client debugging is needed
+  default: false
+  services:
+  - rgw
+- name: motr_addb_enabled
+  type: bool
+  level: advanced
+  desc: Set to true when Motr client ADDB is needed
   default: false
   services:
   - rgw

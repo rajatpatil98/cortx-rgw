@@ -252,6 +252,7 @@ class MotrUser : public User {
     virtual int remove_user(const DoutPrefixProvider* dpp, optional_yield y) override;
 
     int create_user_info_idx();
+    int create_user_stats_idx();
     int load_user_from_idx(const DoutPrefixProvider *dpp, MotrStore *store, RGWUserInfo& info, std::map<std::string, 
                               bufferlist> *attrs, RGWObjVersionTracker *objv_tr);
 
@@ -359,7 +360,7 @@ class MotrBucket : public Bucket {
     virtual int set_acl(const DoutPrefixProvider *dpp, RGWAccessControlPolicy& acl, optional_yield y) override;
     virtual int load_bucket(const DoutPrefixProvider *dpp, optional_yield y, bool get_stats = false) override;
     int link_user(const DoutPrefixProvider* dpp, User* new_user, optional_yield y);
-    int unlink_user(const DoutPrefixProvider* dpp, User* new_user, optional_yield y);
+    int unlink_user(const DoutPrefixProvider* dpp, const rgw_user &bucket_owner, optional_yield y);
     int create_bucket_index();
     int create_multipart_indices();
     virtual int read_stats(const DoutPrefixProvider *dpp, int shard_id,
@@ -627,6 +628,8 @@ class MotrObject : public Object {
     virtual int get_obj_state(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx, RGWObjState **state, optional_yield y, bool follow_olh = true) override;
     virtual int set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx, Attrs* setattrs, Attrs* delattrs, optional_yield y, rgw_obj* target_obj = NULL) override;
     virtual int get_obj_attrs(RGWObjectCtx* rctx, optional_yield y, const DoutPrefixProvider* dpp, rgw_obj* target_obj = NULL) override;
+    int fetch_obj_entry_and_key(const DoutPrefixProvider* dpp, rgw_bucket_dir_entry& ent, std::string& bname, std::string& key, rgw_obj* target_obj);
+    void read_bucket_info(const DoutPrefixProvider* dpp, std::string& bname, std::string& key, rgw_obj* target_obj = NULL);
     virtual int modify_obj_attrs(RGWObjectCtx* rctx, const char* attr_name, bufferlist& attr_val, optional_yield y, const DoutPrefixProvider* dpp) override;
     virtual int delete_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx, const char* attr_name, optional_yield y) override;
     virtual bool is_expired() override;
@@ -678,8 +681,9 @@ class MotrObject : public Object {
     int delete_mobj(const DoutPrefixProvider *dpp);
     void close_mobj();
     int write_mobj(const DoutPrefixProvider *dpp, bufferlist&& data, uint64_t offset);
-    int read_mobj(const DoutPrefixProvider* dpp, int64_t off, int64_t end, RGWGetDataCB* cb);
+    int read_mobj(const DoutPrefixProvider* dpp, int64_t start, int64_t end, RGWGetDataCB* cb);
     unsigned get_optimal_bs(unsigned len);
+    unsigned get_unit_sz();
 
     int get_part_objs(const DoutPrefixProvider *dpp,
                       std::map<int, std::unique_ptr<MotrObject>>& part_objs);
@@ -688,10 +692,18 @@ class MotrObject : public Object {
     int read_multipart_obj(const DoutPrefixProvider* dpp,
                            int64_t off, int64_t end, RGWGetDataCB* cb,
                            std::map<int, std::unique_ptr<MotrObject>>& part_objs);
-    int delete_part_objs(const DoutPrefixProvider* dpp);
+    int delete_part_objs(const DoutPrefixProvider* dpp, uint64_t* size_rounded);
     void set_category(RGWObjCategory _category) {category = _category;}
     int get_bucket_dir_ent(const DoutPrefixProvider *dpp, rgw_bucket_dir_entry& ent);
-    int update_version_entries(const DoutPrefixProvider *dpp);
+    int fetch_null_obj(const DoutPrefixProvider *dpp, bufferlist& bl, bool raise_error=true);
+    int fetch_null_obj_reference(
+      const DoutPrefixProvider *dpp, std::string& prev_null_obj_key, bool raise_error=true);
+    int update_null_reference(const DoutPrefixProvider *dpp, rgw_bucket_dir_entry& ent);
+    int update_version_entries(const DoutPrefixProvider *dpp, bool set_is_latest=false);
+    int overwrite_null_obj(const DoutPrefixProvider *dpp);
+    int remove_mobj_and_index_entry(const DoutPrefixProvider* dpp, rgw_bucket_dir_entry& ent,
+                                    std::string delete_key, std::string bucket_index_iname,
+                                    std::string bucket_name);
     uint64_t get_processed_bytes() { return processed_bytes; }
 };
 
@@ -714,7 +726,6 @@ class MotrAtomicWriter : public Writer {
   uint64_t olh_epoch;
   const std::string& unique_tag;
   MotrObject obj;
-  MotrObject old_obj;
   uint64_t total_data_size; // for total data being uploaded
   bufferlist acc_data;  // accumulated data
   uint64_t   acc_off; // accumulated data offset
@@ -722,6 +733,8 @@ class MotrAtomicWriter : public Writer {
   struct m0_bufvec buf;
   struct m0_bufvec attr;
   struct m0_indexvec ext;
+
+  uint64_t req_id;
 
   public:
   MotrAtomicWriter(const DoutPrefixProvider *dpp,
@@ -847,6 +860,7 @@ public:
 
   virtual uint32_t get_num() { return info.num; }
   virtual uint64_t get_size() { return info.accounted_size; }
+  virtual uint64_t get_size_rounded() { return info.size_rounded; }
   virtual const std::string& get_etag() { return info.etag; }
   virtual ceph::real_time& get_mtime() { return info.modified; }
 
@@ -901,7 +915,7 @@ public:
 			  const rgw_placement_rule *ptail_placement_rule,
 			  uint64_t part_num,
 			  const std::string& part_num_str) override;
-  int delete_parts(const DoutPrefixProvider *dpp);
+  int delete_parts(const DoutPrefixProvider *dpp, std::string version_id="", uint64_t* size_rounded = nullptr);
 };
 
 class MotrStore : public Store {
