@@ -112,8 +112,8 @@ class RGWEtag
 
 public:
   RGWEtag() {
-    if constexpr (std::is_same_v<H, MD5>) {
-      // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+    if constexpr (std::is_same_v<H, MD5I>) {
+      // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
       hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
     }
   }
@@ -145,7 +145,7 @@ public:
   }
 };
 
-using RGWMD5Etag = RGWEtag<MD5, CEPH_CRYPTO_MD5_DIGESTSIZE>;
+using RGWMD5Etag = RGWEtag<MD5I, CEPH_CRYPTO_MD5_DIGESTSIZE>;
 
 class RGWDataAccess
 {

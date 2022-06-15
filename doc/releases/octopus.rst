@@ -346,7 +346,7 @@ Changelog
 * rgw/notification: support GetTopicAttributes API (`pr#40812 <https://github.com/ceph/ceph/pull/40812>`_, Yuval Lifshitz)
 * rgw/notification: trigger notifications on changes from any user (`pr#40029 <https://github.com/ceph/ceph/pull/40029>`_, Yuval Lifshitz)
 * rgw: Use correct bucket info when put or get large object with swift (`pr#40296 <https://github.com/ceph/ceph/pull/40296>`_, zhiming zhang, yupeng chen)
-* rgw: add MD5 in forward_request (`pr#39758 <https://github.com/ceph/ceph/pull/39758>`_, caolei)
+* rgw: add MD5I in forward_request (`pr#39758 <https://github.com/ceph/ceph/pull/39758>`_, caolei)
 * rgw: allow rgw-orphan-list to handle intermediate files w/ binary data (`pr#39766 <https://github.com/ceph/ceph/pull/39766>`_, J. Eric Ivancich)
 * rgw: catch non int exception (`pr#39746 <https://github.com/ceph/ceph/pull/39746>`_, caolei)
 * rgw: during reshard lock contention, adjust logging (`pr#41157 <https://github.com/ceph/ceph/pull/41157>`_, J. Eric Ivancich)

@@ -1010,7 +1010,7 @@ namespace rgw::sal {
     char final_etag_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 16];
     std::string etag;
     bufferlist etag_bl;
-    MD5 hash;
+    MD5I hash;
     bool truncated;
     int ret;
 

@@ -31,7 +31,7 @@ use Amazon::S3;
 use Data::Dumper;
 use IO::File;
 use Getopt::Long;
-use Digest::MD5;
+use Digest::MD5I;
 use Pod::Usage();
 use FindBin;
 use lib $FindBin::Bin;

@@ -202,7 +202,7 @@ class MotrNotification : public Notification {
 class MotrUser : public User {
   private:
     MotrStore         *store;
-    struct m0_uint128  idxID = {0xe5ecb53640d4ecce, 0x6a156cd5a74aa3b8}; // MD5 of “motr.rgw.users“
+    struct m0_uint128  idxID = {0xe5ecb53640d4ecce, 0x6a156cd5a74aa3b8}; // MD5I of “motr.rgw.users“
     struct m0_idx      idx;
 
   public:

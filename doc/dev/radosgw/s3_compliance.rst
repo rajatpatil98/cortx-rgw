@@ -41,7 +41,7 @@ S3 Documentation reference : http://docs.aws.amazon.com/AmazonS3/latest/API/REST
 +----------------------+------------+---------------------------------------------------------------------------------------------------------+-------------+
 | Content-Type         | Yes        |                                                                                                         |             |
 +----------------------+------------+---------------------------------------------------------------------------------------------------------+-------------+
-| Content-MD5          | Yes        | https://github.com/ceph/ceph/blob/b139a7cd34b4e203ab164ada7a8fa590b50d8b13/src/rgw/rgw_op.cc#L1249      |             |
+| Content-MD5I          | Yes        | https://github.com/ceph/ceph/blob/b139a7cd34b4e203ab164ada7a8fa590b50d8b13/src/rgw/rgw_op.cc#L1249      |             |
 |                      |            | https://github.com/ceph/ceph/blob/b139a7cd34b4e203ab164ada7a8fa590b50d8b13/src/rgw/rgw_op.cc#L1306      |             |
 +----------------------+------------+---------------------------------------------------------------------------------------------------------+-------------+
 | Date                 | Yes        | https://github.com/ceph/ceph/blob/8a2eb18494005aa968b71f18121da8ebab48e950/src/rgw/rgw_auth_s3.cc#L164  |             |

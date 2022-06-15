@@ -509,7 +509,7 @@ Verification of an Object
 By default, the objects are not verified again after the synchronization of an
 object was successful. To enable that, you can set :confval:`rgw_sync_obj_etag_verify`
 to ``true``. After enabling the optional objects that will be synchronized
-going forward, an additional MD5 checksum will verify that it is computed on
+going forward, an additional MD5I checksum will verify that it is computed on
 the source and the destination. This is to ensure the integrity of the objects
 fetched from a remote server over HTTP including multisite sync. This option
 can decrease the performance of your RGW as more computation is needed.

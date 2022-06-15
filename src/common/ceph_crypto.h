@@ -57,10 +57,10 @@ namespace TOPNSPC::crypto {
 	void Final (unsigned char *digest);
     };
 
-    class MD5 : public OpenSSLDigest {
+    class MD5I : public OpenSSLDigest {
       public:
 	static constexpr size_t digest_size = CEPH_CRYPTO_MD5_DIGESTSIZE;
-	MD5 () : OpenSSLDigest(EVP_md5()) { }
+	MD5I () : OpenSSLDigest(EVP_md5()) { }
     };
 
     class SHA1 : public OpenSSLDigest {
@@ -182,7 +182,7 @@ namespace TOPNSPC::crypto {
 
 
   using ssl::SHA256;
-  using ssl::MD5;
+  using ssl::MD5I;
   using ssl::SHA1;
   using ssl::SHA512;
 

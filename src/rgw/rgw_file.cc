@@ -1811,7 +1811,7 @@ namespace rgw {
       goto done;
     }
 
-    /* user-supplied MD5 check skipped (not supplied) */
+    /* user-supplied MD5I check skipped (not supplied) */
     /* early quota check skipped--we don't have size yet */
     /* skipping user-supplied etag--we might have one in future, but
      * like data it and other attrs would arrive after open */

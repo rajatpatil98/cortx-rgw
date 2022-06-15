@@ -87,7 +87,7 @@ namespace rgw {
    * identifiable by their hash components alone.  We believe this can
    * be legitimately implemented using 128-hash values for bucket and
    * object components, together with a cluster-resident cryptographic
-   * key.  Since an MD5 or SHA-1 key is 128 bits and the (fast),
+   * key.  Since an MD5I or SHA-1 key is 128 bits and the (fast),
    * non-cryptographic CityHash128 hash algorithm takes a 128-bit seed,
    * speculatively we could use that for the final hash computations.
    */
@@ -2505,7 +2505,7 @@ public:
   CompressorRef plugin;
   buffer::list data;
   uint64_t timer_id;
-  MD5 hash;
+  MD5I hash;
   off_t real_ofs;
   size_t bytes_written;
   bool eio;
@@ -2523,7 +2523,7 @@ public:
     // invoking this classes's header_init()
     (void) RGWWriteRequest::header_init();
     op = this;
-    // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+    // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
     hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   }
 

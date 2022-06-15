@@ -1157,7 +1157,7 @@ class SNMPGatewaySpec(ServiceSpec):
             return self.value
 
     class SNMPAuthType(str, enum.Enum):
-        MD5 = 'MD5'
+        MD5I = 'MD5I'
         SHA = 'SHA'
 
         def to_json(self) -> str:

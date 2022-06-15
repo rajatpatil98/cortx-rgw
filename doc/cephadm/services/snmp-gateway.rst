@@ -43,7 +43,7 @@ Command format
 
 .. prompt:: bash #
 
-   ceph orch apply snmp-gateway <snmp_version:V2c|V3> <destination> [<port:int>] [<engine_id>] [<auth_protocol: MD5|SHA>] [<privacy_protocol:DES|AES>] [<placement>] ...
+   ceph orch apply snmp-gateway <snmp_version:V2c|V3> <destination> [<port:int>] [<engine_id>] [<auth_protocol: MD5I|SHA>] [<privacy_protocol:DES|AES>] [<placement>] ...
 
 
 Usage Notes

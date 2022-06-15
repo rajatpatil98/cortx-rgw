@@ -40,7 +40,7 @@ Request Headers
 
 ``ETag``
 
-:Description: An MD5 hash of the object's contents. Recommended. 
+:Description: An MD5I hash of the object's contents. Recommended. 
 :Type: String
 :Required: No
 

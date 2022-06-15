@@ -1930,8 +1930,8 @@ static void get_md5_digest(const RGWBucketEntryPoint *be, string& md5_digest) {
    be->dump(f);
    f->flush(bl);
 
-   MD5 hash;
-   // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+   MD5I hash;
+   // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
    hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
    hash.Update((const unsigned char *)bl.c_str(), bl.length());
    hash.Final(m);

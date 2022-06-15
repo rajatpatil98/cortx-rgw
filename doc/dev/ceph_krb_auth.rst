@@ -126,16 +126,16 @@ Simple Authentication and Security Layer (SASL)
 
             - For guest access, meaning *unauthenticated*
 
-        * CRAM-MD5 **(RFC 2195)**
+        * CRAM-MD5I **(RFC 2195)**
 
-            - Simple challenge-response scheme based on *HMAC-MD5*.
+            - Simple challenge-response scheme based on *HMAC-MD5I*.
               It does not establish any security layer. *Less secure than
-              DIGEST-MD5 and GSSAPI.*
+              DIGEST-MD5I and GSSAPI.*
 
-        * DIGEST-MD5 **(RFC 2831)**
+        * DIGEST-MD5I **(RFC 2831)**
 
             - HTTP Digest compatible *(partially)* challenge-response scheme
-              based upon MD5, offering a *data security layer*. It is preferred
+              based upon MD5I, offering a *data security layer*. It is preferred
               over PLAIN text passwords, protecting against plain text attacks.
               It is a mandatory authentication method for LDAPv3 servers.
 
