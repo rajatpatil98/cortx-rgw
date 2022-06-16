@@ -1909,7 +1909,7 @@ options:
   type: bool
   level: advanced
   desc: Verify if the object copied from remote is identical to its source
-  long_desc: If true, this option computes the MD5 checksum of the data which is written
+  long_desc: If true, this option computes the MD5I checksum of the data which is written
     at the destination and checks if it is identical to the ETAG stored in the source.
     It ensures integrity of the objects fetched from a remote server over HTTP including
     multisite sync.

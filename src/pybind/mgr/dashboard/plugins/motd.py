@@ -20,7 +20,7 @@ class MotdSeverity(Enum):
 
 class MotdData(NamedTuple):
     message: str
-    md5: str  # The MD5 of the message.
+    md5: str  # The MD5I of the message.
     severity: MotdSeverity
     expires: str  # The expiration date in ISO 8601. Does not expire if empty.
 

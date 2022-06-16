@@ -4167,7 +4167,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& obj_ctx,
     set_mtime_weight.init(set_mtime, svc.zone->get_zone_short_id(), pg_ver);
   }
 
-  /* Perform ETag verification is we have computed the object's MD5 sum at our end */
+  /* Perform ETag verification is we have computed the object's MD5I sum at our end */
   if (const auto& verifier_etag = cb.get_verifier_etag();
       !verifier_etag.empty()) {
     string trimmed_etag = etag;
@@ -5422,8 +5422,8 @@ static void generate_fake_tag(const DoutPrefixProvider *dpp, rgw::sal::Store* st
 
   unsigned char md5[CEPH_CRYPTO_MD5_DIGESTSIZE];
   char md5_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 1];
-  MD5 hash;
-  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  MD5I hash;
+  // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
   hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   hash.Update((const unsigned char *)manifest_bl.c_str(), manifest_bl.length());
 

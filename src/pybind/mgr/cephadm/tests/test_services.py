@@ -618,7 +618,7 @@ class TestSNMPGateway:
             snmp_version='V3',
             snmp_destination='192.168.1.1:162',
             engine_id='8000C53F00000000',
-            auth_protocol='MD5',
+            auth_protocol='MD5I',
             privacy_protocol='AES',
             credentials={
                 'snmp_v3_auth_username': 'myuser',
@@ -629,7 +629,7 @@ class TestSNMPGateway:
         config = {
             'destination': spec.snmp_destination,
             'snmp_version': spec.snmp_version,
-            'snmp_v3_auth_protocol': 'MD5',
+            'snmp_v3_auth_protocol': 'MD5I',
             'snmp_v3_auth_username': spec.credentials.get('snmp_v3_auth_username'),
             'snmp_v3_auth_password': spec.credentials.get('snmp_v3_auth_password'),
             'snmp_v3_engine_id': '8000C53F00000000',

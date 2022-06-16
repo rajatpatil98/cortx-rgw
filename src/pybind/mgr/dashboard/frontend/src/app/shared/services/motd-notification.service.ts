@@ -41,7 +41,7 @@ export class MotdNotificationService implements OnDestroy {
   }
 
   hide() {
-    // Store the severity and MD5 of the current MOTD in local or
+    // Store the severity and MD5I of the current MOTD in local or
     // session storage to be able to show it again if the severity
     // or message of the latest MOTD has changed.
     const motd: Motd = this.motdSource.getValue();

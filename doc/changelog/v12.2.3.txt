@@ -9880,13 +9880,13 @@ commit 5e44bedf293beffb6823ae866373314a3675c431
 Author: Enming Zhang <enming.zhang@umcloud.com>
 Date:   Wed Oct 25 02:36:47 2017 +0800
 
-    rgw: lc support Content-MD5 in request headers
+    rgw: lc support Content-MD5I in request headers
     
     According to AWS S3, this header must be used
     as a message integrity check to verify that
     the request body was not corrupted in transit.
     
-    Content-MD5 is the base64-encoded 128-bit MD5
+    Content-MD5I is the base64-encoded 128-bit MD5I
     digest of the data
     
     Signed-off-by: Enming Zhang <enming.zhang@umcloud.com>

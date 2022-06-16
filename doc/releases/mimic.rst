@@ -4073,7 +4073,7 @@ Detailed Changelog
 * rgw: keep compression type consistent between parts of s3 Multipart (`pr#19740 <https://github.com/ceph/ceph/pull/19740>`_, fang yuxiang)
 * rgw: keystone: bump up logging when error is received (`issue#22151 <http://tracker.ceph.com/issues/22151>`_, `pr#18985 <https://github.com/ceph/ceph/pull/18985>`_, Abhishek Lekshmanan)
 * rgw:lc fix expiration time (`issue#21533 <http://tracker.ceph.com/issues/21533>`_, `pr#17824 <https://github.com/ceph/ceph/pull/17824>`_, Shasha Lu)
-* rgw: lc support Content-MD5 request header and fix a rgw crash bug (`issue#21980 <http://tracker.ceph.com/issues/21980>`_, `pr#18534 <https://github.com/ceph/ceph/pull/18534>`_, Enming Zhang)
+* rgw: lc support Content-MD5I request header and fix a rgw crash bug (`issue#21980 <http://tracker.ceph.com/issues/21980>`_, `pr#18534 <https://github.com/ceph/ceph/pull/18534>`_, Enming Zhang)
 * rgw: lease_cr->go_down is called twice, remove the needless one (`pr#19394 <https://github.com/ceph/ceph/pull/19394>`_, Zhang Shaowen)
 * rgw: librgw: export multitenancy support (`pr#19358 <https://github.com/ceph/ceph/pull/19358>`_, Tao Chen)
 * rgw: librgw: fix shutdown err with resources uncleaned (`issue#22296 <http://tracker.ceph.com/issues/22296>`_, `pr#19279 <https://github.com/ceph/ceph/pull/19279>`_, Tao Chen)

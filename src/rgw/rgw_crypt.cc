@@ -971,8 +971,8 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
         return -EINVAL;
       }
 
-      MD5 key_hash;
-      // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+      MD5I key_hash;
+      // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
       key_hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
       unsigned char key_hash_res[CEPH_CRYPTO_MD5_DIGESTSIZE];
       key_hash.Update(reinterpret_cast<const unsigned char*>(key_bin.c_str()), key_bin.size());
@@ -980,7 +980,7 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
 
       if (memcmp(key_hash_res, keymd5_bin.c_str(), CEPH_CRYPTO_MD5_DIGESTSIZE) != 0) {
         ldpp_dout(s, 5) << "ERROR: Invalid key md5 hash" << dendl;
-        s->err.message = "The calculated MD5 hash of the key did not match the hash that was provided.";
+        s->err.message = "The calculated MD5I hash of the key did not match the hash that was provided.";
         return -EINVAL;
       }
 
@@ -994,7 +994,7 @@ int rgw_s3_prepare_encrypt(struct req_state* s,
       }
 
       crypt_http_responses["x-amz-server-side-encryption-customer-algorithm"] = "AES256";
-      crypt_http_responses["x-amz-server-side-encryption-customer-key-MD5"] = std::string(keymd5);
+      crypt_http_responses["x-amz-server-side-encryption-customer-key-MD5I"] = std::string(keymd5);
       return 0;
     } else {
       std::string_view customer_key =
@@ -1223,8 +1223,8 @@ int rgw_s3_prepare_decrypt(struct req_state* s,
       return -EINVAL;
     }
 
-    MD5 key_hash;
-    // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+    MD5I key_hash;
+    // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
     key_hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
     uint8_t key_hash_res[CEPH_CRYPTO_MD5_DIGESTSIZE];
     key_hash.Update(reinterpret_cast<const unsigned char*>(key_bin.c_str()), key_bin.size());
@@ -1232,7 +1232,7 @@ int rgw_s3_prepare_decrypt(struct req_state* s,
 
     if ((memcmp(key_hash_res, keymd5_bin.c_str(), CEPH_CRYPTO_MD5_DIGESTSIZE) != 0) ||
         (get_str_attribute(attrs, RGW_ATTR_CRYPT_KEYMD5) != keymd5_bin)) {
-      s->err.message = "The calculated MD5 hash of the key did not match the hash that was provided.";
+      s->err.message = "The calculated MD5I hash of the key did not match the hash that was provided.";
       return -EINVAL;
     }
     auto aes = std::unique_ptr<AES_256_CBC>(new AES_256_CBC(s, s->cct));
@@ -1240,7 +1240,7 @@ int rgw_s3_prepare_decrypt(struct req_state* s,
     if (block_crypt) *block_crypt = std::move(aes);
 
     crypt_http_responses["x-amz-server-side-encryption-customer-algorithm"] = "AES256";
-    crypt_http_responses["x-amz-server-side-encryption-customer-key-MD5"] = keymd5;
+    crypt_http_responses["x-amz-server-side-encryption-customer-key-MD5I"] = keymd5;
     return 0;
   }
 

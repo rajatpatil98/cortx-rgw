@@ -337,7 +337,7 @@ service_name: snmp-gateway
 placement:
   count: 1
 spec:
-  auth_protocol: MD5
+  auth_protocol: MD5I
   credentials:
     snmp_v3_auth_password: mypassword
     snmp_v3_auth_username: myuser
@@ -628,7 +628,7 @@ spec:
   snmp_destination: 192.168.122.1:162
   auth_protocol: BIZARRE
   snmp_version: V3
-""", "auth_protocol unsupported. Must be one of MD5, SHA"),
+""", "auth_protocol unsupported. Must be one of MD5I, SHA"),
     ("""
 ---
 service_type: snmp-gateway
@@ -667,7 +667,7 @@ spec:
   auth_protocol: wah
   snmp_destination: 192.168.1.42:162
   snmp_version: V3
-""", 'auth_protocol unsupported. Must be one of MD5, SHA'),
+""", 'auth_protocol unsupported. Must be one of MD5I, SHA'),
         ("""
 ---
 service_type: snmp-gateway

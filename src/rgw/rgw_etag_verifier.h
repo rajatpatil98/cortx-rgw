@@ -3,13 +3,13 @@
 
 /*
  * RGW Etag Verifier is an RGW filter which enables the objects copied using
- * multisite sync to be verified using their ETag from source i.e. the MD5
+ * multisite sync to be verified using their ETag from source i.e. the MD5I
  * checksum of the object is computed at the destination and is verified to be
  * identical to the ETag stored in the object HEAD at source cluster.
  * 
  * For MPU objects, a different filter named RGWMultipartEtagFilter is applied
  * which re-computes ETag using RGWObjManifest. This computes the ETag using the
- * same algorithm used at the source cluster i.e. MD5 sum of the individual ETag
+ * same algorithm used at the source cluster i.e. MD5I sum of the individual ETag
  * on the MPU parts.
  */
 #ifndef CEPH_RGW_ETAG_VERIFIER_H
@@ -25,13 +25,13 @@ class ETagVerifier : public rgw::putobj::Pipe
 {
 protected:
   CephContext* cct;
-  MD5 hash;
+  MD5I hash;
   std::string calculated_etag;
 
 public:
   ETagVerifier(CephContext* cct_, rgw::sal::DataProcessor *next)
     : Pipe(next), cct(cct_) {
-      // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+      // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
       hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
     }
 
@@ -55,7 +55,7 @@ class ETagVerifier_MPU : public ETagVerifier
 {
   std::vector<uint64_t> part_ofs;
   uint64_t cur_part_index{0}, next_part_index{1};
-  MD5 mpu_etag_hash;
+  MD5I mpu_etag_hash;
  
   void process_end_of_MPU_part();
 
@@ -66,7 +66,7 @@ public:
     : ETagVerifier(cct, next),
       part_ofs(std::move(part_ofs))
   {
-    // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+    // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
     hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   }
 

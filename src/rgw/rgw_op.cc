@@ -80,7 +80,7 @@
 
 using namespace std;
 using namespace librados;
-using ceph::crypto::MD5;
+using ceph::crypto::MD5I;
 using boost::optional;
 using boost::none;
 
@@ -1682,8 +1682,8 @@ static int iterate_user_manifest_parts(const DoutPrefixProvider *dpp,
   params.delim = delim;
 
   rgw::sal::Bucket::ListResults results;
-  MD5 etag_sum;
-  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  MD5I etag_sum;
+  // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
   etag_sum.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   do {
     static constexpr auto MAX_LIST_OBJS = 100u;
@@ -1962,8 +1962,8 @@ int RGWGetObj::handle_slo_manifest(bufferlist& bl, optional_yield y)
 
   map<uint64_t, rgw_slo_part> slo_parts;
 
-  MD5 etag_sum;
-  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  MD5I etag_sum;
+  // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
   etag_sum.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   total_len = 0;
 
@@ -3841,8 +3841,8 @@ void RGWPutObj::execute(optional_yield y)
   char supplied_md5[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 1];
   char calc_md5[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 1];
   unsigned char m[CEPH_CRYPTO_MD5_DIGESTSIZE];
-  MD5 hash;
-  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  MD5I hash;
+  // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
   hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   bufferlist bl, aclbl, bs;
   int len;
@@ -4330,8 +4330,8 @@ void RGWPostObj::execute(optional_yield y)
   do {
     char calc_md5[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 1];
     unsigned char m[CEPH_CRYPTO_MD5_DIGESTSIZE];
-    MD5 hash;
-    // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+    MD5I hash;
+    // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
     hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
     ceph::buffer::list bl, aclbl;
     int len = 0;
@@ -5792,7 +5792,7 @@ void RGWPutLC::execute(optional_yield y)
   content_md5 = s->info.env->get("HTTP_CONTENT_MD5");
   if (content_md5 == nullptr) {
     op_ret = -ERR_INVALID_REQUEST;
-    s->err.message = "Missing required header for this request: Content-MD5";
+    s->err.message = "Missing required header for this request: Content-MD5I";
     ldpp_dout(this, 5) << s->err.message << dendl;
     return;
   }
@@ -5801,7 +5801,7 @@ void RGWPutLC::execute(optional_yield y)
   try {
     content_md5_bin = rgw::from_base64(std::string_view(content_md5));
   } catch (...) {
-    s->err.message = "Request header Content-MD5 contains character "
+    s->err.message = "Request header Content-MD5I contains character "
                      "that is not base64 encoded.";
     ldpp_dout(this, 5) << s->err.message << dendl;
     op_ret = -ERR_BAD_DIGEST;
@@ -5820,8 +5820,8 @@ void RGWPutLC::execute(optional_yield y)
   char* buf = data.c_str();
   ldpp_dout(this, 15) << "read len=" << data.length() << " data=" << (buf ? buf : "") << dendl;
 
-  MD5 data_hash;
-  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  MD5I data_hash;
+  // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
   data_hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   unsigned char data_hash_res[CEPH_CRYPTO_MD5_DIGESTSIZE];
   data_hash.Update(reinterpret_cast<const unsigned char*>(buf), data.length());
@@ -5829,7 +5829,7 @@ void RGWPutLC::execute(optional_yield y)
 
   if (memcmp(data_hash_res, content_md5_bin.c_str(), CEPH_CRYPTO_MD5_DIGESTSIZE) != 0) {
     op_ret = -ERR_BAD_DIGEST;
-    s->err.message = "The Content-MD5 you specified did not match what we received.";
+    s->err.message = "The Content-MD5I you specified did not match what we received.";
     ldpp_dout(this, 5) << s->err.message
                      << " Specified content md5: " << content_md5
                      << ", calculated content md5: " << data_hash_res
@@ -6429,8 +6429,8 @@ bool RGWCompleteMultipart::check_previously_completed(const RGWMultiCompleteUplo
   rgw::sal::Attrs sattrs = s->object->get_attrs();
   string oetag = sattrs[RGW_ATTR_ETAG].to_str();
 
-  MD5 hash;
-  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  MD5I hash;
+  // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
   hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   for (const auto& [index, part] : parts->parts) {
     std::string partetag = rgw_string_unquote(part);
@@ -7462,8 +7462,8 @@ int RGWBulkUploadOp::handle_file(const std::string_view path,
   /* Upload file content. */
   ssize_t len = 0;
   size_t ofs = 0;
-  MD5 hash;
-  // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+  MD5I hash;
+  // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
   hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
   do {
     ceph::bufferlist data;

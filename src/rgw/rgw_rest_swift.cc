@@ -976,8 +976,8 @@ int RGWPutObj_ObjStore_SWIFT::get_params(optional_yield y)
       return -EINVAL;
     }
 
-    MD5 etag_sum;
-    // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
+    MD5I etag_sum;
+    // Allow use of MD5I digest in FIPS mode for non-cryptographic purposes
     etag_sum.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
     uint64_t total_size = 0;
     for (auto& entry : slo_info->entries) {

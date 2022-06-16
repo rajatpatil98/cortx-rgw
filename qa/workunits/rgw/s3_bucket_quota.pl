@@ -32,7 +32,7 @@ use Data::Dumper;
 #use strict;
 use IO::File;
 use Getopt::Long;
-use Digest::MD5;
+use Digest::MD5I;
 use Pod::Usage();
 use FindBin;
 use lib $FindBin::Bin;

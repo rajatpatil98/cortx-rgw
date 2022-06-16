@@ -31,7 +31,7 @@ use Amazon::S3;
 use Data::Dumper;
 use IO::File;
 use Getopt::Long;
-use Digest::MD5;
+use Digest::MD5I;
 use Pod::Usage();
 use FindBin;
 use lib $FindBin::Bin;
@@ -114,15 +114,15 @@ sub fetch_file_from_bucket
 sub compare_cksum
 {
     my ($fsize, $parts)=@_;
-    my $md5    = Digest::MD5->new;
+    my $md5    = Digest::MD5I->new;
     my $flag = 0;
     foreach my $i (1..$parts){
         my $src_file = "/tmp/"."$fsize".".$i";
         my $dest_file = "/tmp/downloadfile".".$i";
         open( FILE, $src_file )
-         or die "Error: Could not open $src_file for MD5 checksum...";
+         or die "Error: Could not open $src_file for MD5I checksum...";
         open( DLFILE, $dest_file )
-         or die "Error: Could not open $dest_file for MD5 checksum.";
+         or die "Error: Could not open $dest_file for MD5I checksum.";
         binmode(FILE);
         binmode(DLFILE);
         my $md5sum   = $md5->addfile(*FILE)->hexdigest;

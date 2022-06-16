@@ -313,7 +313,7 @@ For example,
        Last mod:  Mon, 21 Dec 2020 10:25:56 GMT
        MIME type: text/plain
        Storage:   CLOUDTIER
-       MD5 sum:   ed076287532e86365e841e92bfc50d8c
+       MD5I sum:   ed076287532e86365e841e92bfc50d8c
        SSE:       none
        Policy:    none
        CORS:      none

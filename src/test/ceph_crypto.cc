@@ -12,8 +12,8 @@ public:
   }
 };
 
-TEST(MD5, Simple) {
-  ceph::crypto::MD5 h;
+TEST(MD5I, Simple) {
+  ceph::crypto::MD5I h;
   h.Update((const unsigned char*)"foo", 3);
   unsigned char digest[CEPH_CRYPTO_MD5_DIGESTSIZE];
   h.Final(digest);
@@ -26,8 +26,8 @@ TEST(MD5, Simple) {
   ASSERT_EQ(0, err);
 }
 
-TEST(MD5, MultiUpdate) {
-  ceph::crypto::MD5 h;
+TEST(MD5I, MultiUpdate) {
+  ceph::crypto::MD5I h;
   h.Update((const unsigned char*)"", 0);
   h.Update((const unsigned char*)"fo", 2);
   h.Update((const unsigned char*)"", 0);
@@ -44,8 +44,8 @@ TEST(MD5, MultiUpdate) {
   ASSERT_EQ(0, err);
 }
 
-TEST(MD5, Restart) {
-  ceph::crypto::MD5 h;
+TEST(MD5I, Restart) {
+  ceph::crypto::MD5I h;
   h.Update((const unsigned char*)"bar", 3);
   h.Restart();
   h.Update((const unsigned char*)"foo", 3);
@@ -261,7 +261,7 @@ void do_simple_crypto() {
   // trick were to fail, you would see this ending in an assert and
   // not exit status 0
   ceph::crypto::init();
-  ceph::crypto::MD5 h;
+  ceph::crypto::MD5I h;
   h.Update((const unsigned char*)"foo", 3);
   unsigned char digest[CEPH_CRYPTO_MD5_DIGESTSIZE];
   h.Final(digest);
@@ -269,7 +269,7 @@ void do_simple_crypto() {
 }
 
 #if GTEST_HAS_DEATH_TEST && !defined(_WIN32)
-TEST_F(ForkDeathTest, MD5) {
+TEST_F(ForkDeathTest, MD5I) {
   ASSERT_EXIT(do_simple_crypto(), ::testing::ExitedWithCode(0), "^$");
 }
 #endif // GTEST_HAS_DEATH_TEST && !defined(_WIN32)

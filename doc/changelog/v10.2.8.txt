@@ -1778,7 +1778,7 @@ Date:   Mon Dec 5 20:23:21 2016 +0800
 
     test/ceph_crypto: do not read ceph.conf in global_init()
     
-    ForkDeathTest.MD5 expect an empty output while global_init() complains
+    ForkDeathTest.MD5I expect an empty output while global_init() complains
     if ceph.conf is missing if 0 is passed in as the `flags`. this test
     passes if ceph.conf is in current working directory, but jenkins does
     not prepare this file for this test.

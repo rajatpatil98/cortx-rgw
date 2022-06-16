@@ -53,7 +53,7 @@ namespace rgw::sal {
   using Attrs = std::map<std::string, ceph::buffer::list>;
 }
 
-using ceph::crypto::MD5;
+using ceph::crypto::MD5I;
 
 #define RGW_ATTR_PREFIX  "user.rgw."
 

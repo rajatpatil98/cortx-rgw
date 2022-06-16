@@ -1442,7 +1442,7 @@ tcp_sequence tcp<InetTraits>::tcb::get_isn() {
   hash[1] = _foreign_ip.ip;
   hash[2] = (_local_port << 16) + _foreign_port;
   hash[3] = _isn_secret.key[15];
-  ceph::crypto::MD5 md5;
+  ceph::crypto::MD5I md5;
   md5.Update((const unsigned char*)_isn_secret.key, sizeof(_isn_secret.key));
   md5.Final((unsigned char*)hash);
   auto seq = hash[0];
