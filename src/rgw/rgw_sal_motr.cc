@@ -1026,7 +1026,7 @@ int MotrBucket::unlink_user(const DoutPrefixProvider* dpp, const rgw_user &bucke
   // Remove the user into the user info index.
   bufferlist bl;
   string tenant_bkt_name = get_bucket_name(info.bucket.tenant, info.bucket.name);
-  string user_info_idx_name = "motr.rgw.user.info." + bucket_owner.id;
+  string user_info_idx_name = "motr.rgw.user.info." + bucket_owner.to_str();
   return store->do_idx_op_by_name(user_info_idx_name,
                                   M0_IC_DEL, tenant_bkt_name, bl);
 }
@@ -1413,8 +1413,7 @@ uint64_t MotrStore::get_new_req_id()
 
   addb_logger.set_id(req_id);
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_GET_NEW_REQ_ID,
-       RGW_ADDB_PHASE_START);
+       RGW_ADDB_FUNC_GET_NEW_REQ_ID, RGW_ADDB_PHASE_START);
   
   return req_id;
 }
@@ -1483,26 +1482,10 @@ int MotrObject::get_obj_state(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
   *_state = state;
 
   // Get object's metadata (those stored in rgw_bucket_dir_entry).
-  bufferlist bl;
-  string tenant_bkt_name = get_bucket_name(this->get_bucket()->get_tenant(), this->get_bucket()->get_name());
-  if (this->store->get_obj_meta_cache()->get(dpp, this->get_key().to_str(), bl)) {
-    // Cache misses.
-    string bucket_index_iname = "motr.rgw.bucket.index." + tenant_bkt_name;
-    int rc = this->store->do_idx_op_by_name(bucket_index_iname,
-                                  M0_IC_GET, this->get_key().to_str(), bl);
-    if (rc < 0) {
-      ldpp_dout(dpp, 0) << __func__ << ": failed to get object's entry from bucket index. rc = " << rc << dendl;
-      return rc;
-    }
-
-    // Put into cache.
-    this->store->get_obj_meta_cache()->put(dpp, this->get_key().to_str(), bl);
-  }
-
   rgw_bucket_dir_entry ent;
-  bufferlist& blr = bl;
-  auto iter = blr.cbegin();
-  ent.decode(iter);
+  int rc = this->get_bucket_dir_ent(dpp, ent);
+  if (rc < 0)
+    return rc;
 
   // Set object's type.
   this->category = ent.meta.category;
@@ -1809,7 +1792,6 @@ int MotrObject::MotrReadOp::prepare(optional_yield y, const DoutPrefixProvider* 
   ldpp_dout(dpp, 20) <<__func__<< ": object's etag: " << ent.meta.etag << dendl;
   etag_bl.append(etag.c_str(), etag.size());
   source->get_attrs().emplace(std::move(RGW_ATTR_ETAG), std::move(etag_bl));
-
   source->set_key(ent.key);
   source->set_obj_size(ent.meta.size);
   source->category = ent.meta.category;
@@ -1909,7 +1891,14 @@ int MotrObject::MotrReadOp::iterate(const DoutPrefixProvider* dpp, int64_t off, 
 
 int MotrObject::MotrReadOp::get_attr(const DoutPrefixProvider* dpp, const char* name, bufferlist& dest, optional_yield y)
 {
-  //return 0;
+  if (source == nullptr)
+    return -ENODATA;
+  rgw::sal::Attrs &attrs = source->get_attrs();
+  auto iter = attrs.find(name);
+  if (iter != attrs.end()) {
+    dest = iter->second;
+    return 0;
+  }
   return -ENODATA;
 }
 
@@ -2012,38 +2001,41 @@ int MotrObject::MotrDeleteOp::delete_obj(const DoutPrefixProvider* dpp, optional
       // generate version-id for delete marker.
       result.delete_marker = true;
       source->gen_rand_obj_instance_name();
-      // if latest version is null version, then delete the null version-object and
-      // add reference of delete-marker in null reference key.
-      if (ent.key.instance == "null") {
+      std::string del_marker_ver_id = source->get_instance();
+
+      result.version_id = del_marker_ver_id;
+      if (!info.versioning_enabled()) {
+        // for suspended bucket delete-marker's version-id = "null"
         result.version_id = "null";
-        source->set_instance(ent.key.instance);
-        rc = source->remove_mobj_and_index_entry(
+        // if latest version is null version, then delete the null version-object and
+        // add reference of delete-marker in null reference key.
+        if (ent.key.instance == "null") {
+          source->set_instance(ent.key.instance);
+          rc = source->remove_mobj_and_index_entry(
             dpp, ent, delete_key, bucket_index_iname, tenant_bkt_name);
-        if (rc < 0) {
-          ldpp_dout(dpp, 0) << "Failed to delete the object from Motr. key- "<< delete_key << dendl;
-          return rc;
+          if (rc < 0) {
+            ldpp_dout(dpp, 0) << "Failed to delete the object from Motr. key- "<< delete_key << dendl;
+            return rc;
+          }
         }
-        // delete null version key and update null reference entry.
+        source->set_instance(del_marker_ver_id);
+        // update delete-marker reference in null reference key.
         rc = source->update_null_reference(dpp, ent);
         if (rc<0) {
           ldpp_dout(dpp, 0) << "Failed to update null reference key bucket." << dendl;
           return rc;
         }
-      } else {
-        result.version_id = source->get_instance();
-        // update is-latest=false for current version entry.
-        ldpp_dout(dpp, 20)<<__func__<< " Updating previous version entries " << dendl;
-        rc = source->update_version_entries(dpp);
-        if (rc < 0)
-          return rc;
       }
+      // update is-latest=false for current version entry.
+      ldpp_dout(dpp, 20) << __func__ << " Updating previous version entries " << dendl;
+      rc = source->update_version_entries(dpp);
+      if (rc < 0)
+        return rc;
       // creating a delete marker
       bufferlist del_mark_bl;
       rgw_bucket_dir_entry ent_del_marker;
       ent_del_marker.key.name = source->get_name();
-      ent_del_marker.key.instance = source->get_instance();
-      if (ent.key.instance == "null")
-        ent_del_marker.key.instance = "null";
+      ent_del_marker.key.instance = result.version_id;
       ent_del_marker.meta.owner = params.obj_owner.get_id().to_str();
       ent_del_marker.meta.owner_display_name = params.obj_owner.get_display_name();
       ent_del_marker.flags = rgw_bucket_dir_entry::FLAG_DELETE_MARKER | rgw_bucket_dir_entry::FLAG_CURRENT;
@@ -2117,8 +2109,7 @@ int MotrObject::remove_mobj_and_index_entry(
         rc = this->open_mobj(dpp);
         if (rc < 0) {
           ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(),
-	        RGW_ADDB_FUNC_DELETE_MOBJ,
-	        RGW_ADDB_PHASE_ERROR);
+               RGW_ADDB_FUNC_DELETE_MOBJ, RGW_ADDB_PHASE_ERROR);
           return rc;
         }
       }
@@ -2176,6 +2167,174 @@ int MotrObject::delete_obj_aio(const DoutPrefixProvider* dpp, RGWObjState* astat
   return 0;
 }
 
+int MotrCopyObj_CB::handle_data(bufferlist& bl, off_t bl_ofs, off_t bl_len)
+{
+  int rc = 0;
+  ldpp_dout(m_dpp, 20) << "Offset = " << bl_ofs << " Length = "
+                       << " Write Offset = " << write_offset << bl_len << dendl;
+
+
+  //offset is zero and bufferlength is equal to bl_len
+  if (!bl_ofs && bl_len == bl.length()) {
+    bufferptr bptr(bl.c_str(), bl_len);
+    bufferlist blist;
+    blist.push_back(bptr);
+    rc = m_dst_writer->process(std::move(blist), write_offset);
+    if(rc < 0){
+      ldpp_dout(m_dpp, 20) << "ERROR: writer process bl_ofs=0 && " <<
+                          "bl_len = " << bl.length() << " Write Offset = " <<
+                          write_offset << "failed rc = " << rc << dendl;
+    }
+    write_offset += bl_len;
+    return rc;
+  }
+  
+  bufferptr bp(bl.c_str() + bl_ofs, bl_len);
+  bufferlist new_bl;
+  new_bl.push_back(bp);
+
+  rc = m_dst_writer->process(std::move(new_bl), write_offset);
+  if(rc < 0){
+    ldpp_dout(m_dpp, 20) << "ERROR: writer process failed rc = " << rc
+                         << " Write Offset = " << write_offset << dendl;
+    return rc;
+  }
+  write_offset += bl_len;
+
+  ldpp_dout(m_dpp, 20) << "MotrCopyObj_CB handle_data called rc = " << rc << dendl;
+  return rc;
+}
+
+
+int MotrObject::copy_object_same_zone(RGWObjectCtx& obj_ctx,
+    User* user,
+    req_info* info,
+    const rgw_zone_id& source_zone,
+    rgw::sal::Object* dest_object,
+    rgw::sal::Bucket* dest_bucket,
+    rgw::sal::Bucket* src_bucket,
+    const rgw_placement_rule& dest_placement,
+    ceph::real_time* src_mtime,
+    ceph::real_time* mtime,
+    const ceph::real_time* mod_ptr,
+    const ceph::real_time* unmod_ptr,
+    bool high_precision_time,
+    const char* if_match,
+    const char* if_nomatch,
+    AttrsMod attrs_mod,
+    bool copy_if_newer,
+    Attrs& attrs,
+    RGWObjCategory category,
+    uint64_t olh_epoch,
+    boost::optional<ceph::real_time> delete_at,
+    std::string* version_id,
+    std::string* tag,
+    std::string* etag,
+    void (*progress_cb)(off_t, void *),
+    void* progress_data,
+    const DoutPrefixProvider* dpp,
+    optional_yield y)
+{
+  int rc = 0;
+  std::string ver_id;
+  std::string req_id;
+
+  ldpp_dout(dpp, 20) << "Src Object Name : " << this->get_key().get_oid() << dendl;
+  ldpp_dout(dpp, 20) << "Dest Object Name : " << dest_object->get_key().get_oid() << dendl;
+
+  std::unique_ptr<rgw::sal::Object::ReadOp> read_op = this->get_read_op(&obj_ctx);
+
+  // prepare read op
+  read_op->params.lastmod = src_mtime;
+  read_op->params.if_match = if_match;
+  read_op->params.if_nomatch = if_nomatch;
+  read_op->params.mod_ptr = mod_ptr;
+  read_op->params.unmod_ptr = unmod_ptr;
+
+  rc = read_op->prepare(y, dpp);
+  if(rc < 0){
+    ldpp_dout(dpp, 20) << "ERROR: read op prepare failed rc = " << rc << dendl;
+    return rc;
+  }
+
+  if(version_id){
+    ver_id = *version_id;
+  }
+  if(tag){
+    req_id = *tag;
+  }
+
+  // prepare write op
+  std::shared_ptr<rgw::sal::Writer> dst_writer = store->get_atomic_writer(dpp, y,
+        dest_object->clone(),
+        user->get_id(), obj_ctx,
+        &dest_placement, olh_epoch, req_id);
+
+  rc = dst_writer->prepare(y);
+  if(rc < 0){
+    ldpp_dout(dpp, 20) << "ERROR: writer prepare failed rc = " << rc << dendl;
+    return rc;
+  }
+
+  // Create filter object.
+  MotrCopyObj_CB cb(dpp, dst_writer);
+  MotrCopyObj_Filter* filter = &cb;
+
+  // Get offsets.
+  int64_t cur_ofs = 0, cur_end = obj_size;
+  rc = this->range_to_ofs(obj_size, cur_ofs, cur_end);
+  if (rc < 0){
+    ldpp_dout(dpp, 20) << "ERROR: read op range_to_ofs failed rc = " << rc << dendl;
+    return rc;
+  }
+
+  // read::iterate -> handle_data() -> write::process
+  rc = read_op->iterate(dpp, cur_ofs, cur_end, filter, y);
+  if (rc < 0){
+    ldpp_dout(dpp, 20) << "ERROR: read op iterate failed rc = " << rc << dendl;
+    return rc;
+  }
+
+  real_time time = ceph::real_clock::now();
+  if(mtime){
+    *mtime = time;
+  }
+
+  //fetch etag.
+  bufferlist bl;
+  rc = read_op->get_attr(dpp, RGW_ATTR_ETAG, bl, y);
+  if (rc < 0){
+    ldpp_dout(dpp, 20) << "ERROR: read op iterate failed rc = " << rc << dendl;
+    return rc;
+  }
+  string etag_str;
+  etag_str.assign(bl.c_str(), bl.length());
+
+  if(etag){
+    *etag = etag_str;
+  }
+
+  real_time del_time;
+
+  // write::complete - overwrite and md handling done here
+  rc = dst_writer->complete(obj_size, etag_str,
+                      mtime, time,
+                      attrs,
+                      del_time,
+                      if_match,
+                      if_nomatch,
+                      nullptr,
+                      nullptr,
+                      nullptr,
+                      y);
+  if (rc < 0){
+    ldpp_dout(dpp, 20) << "ERROR: writer complete failed rc = " << rc << dendl;
+    return rc;
+  }
+
+  return rc;
+}
+
 int MotrObject::copy_object(RGWObjectCtx& obj_ctx,
     User* user,
     req_info* info,
@@ -2205,7 +2364,66 @@ int MotrObject::copy_object(RGWObjectCtx& obj_ctx,
     const DoutPrefixProvider* dpp,
     optional_yield y)
 {
-      return 0;
+  int rc = 0;
+  auto& src_zonegrp = src_bucket->get_info().zonegroup;
+  auto& dest_zonegrp = dest_bucket->get_info().zonegroup;
+
+  if(src_zonegrp.compare(dest_zonegrp) != 0){
+    ldpp_dout(dpp, 0) << __func__ << "Unsupported Action Requested." << dendl;
+    return -ERR_NOT_IMPLEMENTED;
+  }
+
+  ldpp_dout(dpp, 20) << __func__ << "Src and Dest Zonegroups are same."
+                    << "src_zonegrp : " << src_zonegrp
+                    << "dest_zonegrp : " << dest_zonegrp << dendl;
+
+  //
+  // Check if src object is encrypted.
+  rgw::sal::Attrs &src_attrs = this->get_attrs();
+  if (src_attrs.count(RGW_ATTR_CRYPT_MODE)) {
+    // Current implementation does not follow S3 spec and even
+    // may result in data corruption silently when copying
+    // multipart objects acorss pools. So reject COPY operations
+    //on encrypted objects before it is fully functional.
+    ldpp_dout(dpp, 0) << "ERROR: copy op for encrypted object has not been implemented." << dendl;
+    return -ERR_NOT_IMPLEMENTED;
+  }
+
+  rc = copy_object_same_zone(obj_ctx,
+                            user,
+                            info,
+                            source_zone,
+                            dest_object,
+                            dest_bucket,
+                            src_bucket,
+                            dest_placement,
+                            src_mtime,
+                            mtime,
+                            mod_ptr,
+                            unmod_ptr,
+                            high_precision_time,
+                            if_match,
+                            if_nomatch,
+                            attrs_mod,
+                            copy_if_newer,
+                            attrs,
+                            category,
+                            olh_epoch,
+                            delete_at,
+                            version_id,
+                            tag,
+                            etag,
+                            progress_cb,
+                            progress_data,
+                            dpp,
+                            y);
+  if (rc < 0){
+    ldpp_dout(dpp, 20) << "ERROR: copy_object_same_zone failed rc = " << rc << dendl;
+    return rc;
+  }
+
+  ldpp_dout(dpp, 20) << "Copy op completed rc = " << rc << dendl;
+  return rc;
 }
 
 int MotrObject::swift_versioning_restore(RGWObjectCtx* obj_ctx,
@@ -2269,13 +2487,11 @@ int MotrAtomicWriter::prepare(optional_yield y)
 int MotrObject::create_mobj(const DoutPrefixProvider *dpp, uint64_t sz)
 {
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_CREATE_MOBJ,
-       RGW_ADDB_PHASE_START);
+       RGW_ADDB_FUNC_CREATE_MOBJ, RGW_ADDB_PHASE_START);
 
   if (mobj != nullptr) {
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_CREATE_MOBJ,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_CREATE_MOBJ, RGW_ADDB_PHASE_ERROR);
     ldpp_dout(dpp, 0) <<__func__<< "ERROR: object is already opened" << dendl;
     
     return -EINVAL;
@@ -2284,22 +2500,20 @@ int MotrObject::create_mobj(const DoutPrefixProvider *dpp, uint64_t sz)
   int rc = m0_ufid_next(&ufid_gr, 1, &meta.oid);
   if (rc != 0) {
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_CREATE_MOBJ,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_CREATE_MOBJ, RGW_ADDB_PHASE_ERROR);
     ldpp_dout(dpp, 0) <<__func__<< "ERROR: m0_ufid_next() failed: " << rc << dendl;
 
     return rc;
   }
   expected_obj_size = sz;
 
-  char fid_str[M0_FID_STR_LEN];
-  snprintf(fid_str, ARRAY_SIZE(fid_str), U128X_F, U128_P(&meta.oid));
-  ldpp_dout(dpp, 20) <<__func__<< ": sz=" << sz << " oid=" << fid_str << dendl;
+  ldpp_dout(dpp, 20) << __func__ << ": key=" << this->get_key().to_str() << ", meta:oid=[0x" << std::hex
+                                 << meta.oid.u_hi << ":0x" << std::hex  << meta.oid.u_lo << "]" << dendl;
 
   int64_t lid = m0_layout_find_by_objsz(store->instance, nullptr, sz);
   if (lid <= 0) {
     ldpp_dout(dpp, 0) <<__func__<< ": failed to get lid: " << lid << dendl;
-    return lid == 0 ? -EINVAL : (int)lid;
+    return lid == 0 ? -EAGAIN : (int)lid;
   }
 
   M0_ASSERT(mobj == nullptr);
@@ -2311,8 +2525,7 @@ int MotrObject::create_mobj(const DoutPrefixProvider *dpp, uint64_t sz)
   rc = m0_entity_create(nullptr, &mobj->ob_entity, &op);
   if (rc != 0) {
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_CREATE_MOBJ,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_CREATE_MOBJ, RGW_ADDB_PHASE_ERROR);
     this->close_mobj();
     ldpp_dout(dpp, 0) << __func__ << ": ERROR: m0_entity_create() failed, rc = " << rc << dendl;
     return rc;
@@ -2328,8 +2541,7 @@ int MotrObject::create_mobj(const DoutPrefixProvider *dpp, uint64_t sz)
 
   if (rc != 0) {
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_CREATE_MOBJ,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_CREATE_MOBJ, RGW_ADDB_PHASE_ERROR);
     this->close_mobj();
     ldpp_dout(dpp, 0) << __func__ << ": ERROR: failed to create motr object. rc = " << rc << dendl;
     return rc;
@@ -2337,12 +2549,13 @@ int MotrObject::create_mobj(const DoutPrefixProvider *dpp, uint64_t sz)
 
   meta.layout_id = mobj->ob_attr.oa_layout_id;
   meta.pver      = mobj->ob_attr.oa_pver;
-  ldpp_dout(dpp, 20) <<__func__<< ": lid=0x" << std::hex << meta.layout_id
-                     << std::dec << " rc = " << rc << dendl;
+  ldpp_dout(dpp, 20) << __func__ << ": key=" << this->get_key() << ", meta:oid=[0x" << std::hex << meta.oid.u_hi
+                                  << ":0x" << std::hex << meta.oid.u_lo << "], meta:pvid=[0x" << std::hex
+                                  << meta.pver.f_container << ":0x" << std::hex << meta.pver.f_key
+                                  << "], meta:layout_id=0x" << std::hex << meta.layout_id << dendl;
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_CREATE_MOBJ,
-       RGW_ADDB_PHASE_DONE);
+       RGW_ADDB_FUNC_CREATE_MOBJ, RGW_ADDB_PHASE_DONE);
   // TODO: add key:user+bucket+key+obj.meta.oid value:timestamp to
   // gc.queue.index. See more at github.com/Seagate/cortx-rgw/issues/7.
 
@@ -2351,13 +2564,11 @@ int MotrObject::create_mobj(const DoutPrefixProvider *dpp, uint64_t sz)
 
 int MotrObject::open_mobj(const DoutPrefixProvider *dpp)
 {
-  char fid_str[M0_FID_STR_LEN];
-  snprintf(fid_str, ARRAY_SIZE(fid_str), U128X_F, U128_P(&meta.oid));
-  ldpp_dout(dpp, 20) <<__func__<< ": oid=" << fid_str << dendl;
+  ldpp_dout(dpp, 20) << __func__ << ": key=" << this->get_key().to_str() << ", meta:oid=[0x" << std::hex
+                                 << meta.oid.u_hi  << ":0x" << std::hex  << meta.oid.u_lo << "]" << dendl;
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_OPEN_MOBJ,
-       RGW_ADDB_PHASE_START);
+       RGW_ADDB_FUNC_OPEN_MOBJ, RGW_ADDB_PHASE_START);
 
   int rc;
   if (meta.layout_id == 0) {
@@ -2365,8 +2576,7 @@ int MotrObject::open_mobj(const DoutPrefixProvider *dpp)
     rc = this->get_bucket_dir_ent(dpp, ent);
     if (rc < 0) {
       ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	   RGW_ADDB_FUNC_OPEN_MOBJ,
-	   RGW_ADDB_PHASE_ERROR);
+           RGW_ADDB_FUNC_OPEN_MOBJ, RGW_ADDB_PHASE_ERROR);
       ldpp_dout(dpp, 0) << __func__ << ": ERROR: get_bucket_dir_ent failed: rc = " << rc << dendl;
       return rc;
     }
@@ -2374,9 +2584,8 @@ int MotrObject::open_mobj(const DoutPrefixProvider *dpp)
 
   if (meta.layout_id == 0) {
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_OPEN_MOBJ,
-	 RGW_ADDB_PHASE_DONE);
-
+         RGW_ADDB_FUNC_OPEN_MOBJ, RGW_ADDB_PHASE_DONE);
+    ldpp_dout(dpp, 0) << __func__ << ": ERROR: did not find motr obj details." << dendl;
     return -ENOENT;
   }
 
@@ -2389,16 +2598,18 @@ int MotrObject::open_mobj(const DoutPrefixProvider *dpp)
   mobj->ob_attr.oa_layout_id = meta.layout_id;
   mobj->ob_attr.oa_pver      = meta.pver;
   mobj->ob_entity.en_flags  |= (M0_ENF_META | M0_ENF_GEN_DI);
+  ldpp_dout(dpp, 20) << __func__ << ": key=" << this->get_key().to_str() << ", meta:oid=[0x" << std::hex << meta.oid.u_hi
+                                 << ":0x" << meta.oid.u_lo << "], meta:pvid=[0x" << std::hex << meta.pver.f_container
+                                 << ":0x" << meta.pver.f_key << "], meta:layout_id=0x" << std::hex << meta.layout_id << dendl;
   rc = m0_entity_open(&mobj->ob_entity, &op);
   if (rc != 0) {
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_OPEN_MOBJ,
-	 RGW_ADDB_PHASE_ERROR);
-
+         RGW_ADDB_FUNC_OPEN_MOBJ, RGW_ADDB_PHASE_ERROR);
     ldpp_dout(dpp, 0) << __func__ << ": ERROR: m0_entity_open() failed: rc =" << rc << dendl;
     this->close_mobj();
     return rc;
   }
+
   ADDB(RGW_ADDB_REQUEST_TO_MOTR_ID, addb_logger.get_id(), m0_sm_id_get(&op->op_sm));
   m0_op_launch(&op, 1);
   rc = m0_op_wait(op, M0_BITS(M0_OS_FAILED, M0_OS_STABLE), M0_TIME_NEVER) ?:
@@ -2408,16 +2619,14 @@ int MotrObject::open_mobj(const DoutPrefixProvider *dpp)
 
   if (rc < 0) {
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_OPEN_MOBJ,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_OPEN_MOBJ, RGW_ADDB_PHASE_ERROR);
     ldpp_dout(dpp, 10) << __func__ << ": ERROR: failed to open motr object: rc =" << rc << dendl;
     this->close_mobj();
     return rc;
   }
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_OPEN_MOBJ,
-       RGW_ADDB_PHASE_DONE);
+       RGW_ADDB_FUNC_OPEN_MOBJ, RGW_ADDB_PHASE_DONE);
   ldpp_dout(dpp, 20) <<__func__<< ": exit. rc =" << rc << dendl;
 
   return 0;
@@ -2430,15 +2639,12 @@ int MotrObject::delete_mobj(const DoutPrefixProvider *dpp)
   snprintf(fid_str, ARRAY_SIZE(fid_str), U128X_F, U128_P(&meta.oid));
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_DELETE_MOBJ,
-       RGW_ADDB_PHASE_START);
+       RGW_ADDB_FUNC_DELETE_MOBJ, RGW_ADDB_PHASE_START);
 
   if (!meta.oid.u_hi || !meta.oid.u_lo) {
     ldpp_dout(dpp, 20) << __func__ << ": invalid motr object oid=" << fid_str << dendl;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_DELETE_MOBJ,
-	 RGW_ADDB_PHASE_ERROR);
-
+         RGW_ADDB_FUNC_DELETE_MOBJ, RGW_ADDB_PHASE_ERROR);
     return -EINVAL;
   }
   ldpp_dout(dpp, 20) << __func__ << ": deleting motr object oid=" << fid_str << dendl;
@@ -2448,9 +2654,7 @@ int MotrObject::delete_mobj(const DoutPrefixProvider *dpp)
     rc = this->open_mobj(dpp);
     if (rc < 0) {
       ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	   RGW_ADDB_FUNC_DELETE_MOBJ,
-	   RGW_ADDB_PHASE_ERROR);
-      
+           RGW_ADDB_FUNC_DELETE_MOBJ, RGW_ADDB_PHASE_ERROR);
       return rc;
     }
   }
@@ -2462,10 +2666,10 @@ int MotrObject::delete_mobj(const DoutPrefixProvider *dpp)
   if (rc != 0) {
     ldpp_dout(dpp, 0) << __func__ << ": ERROR: m0_entity_delete() failed. rc = " << rc << dendl;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_DELETE_MOBJ,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_DELETE_MOBJ, RGW_ADDB_PHASE_ERROR);
     return rc;
   }
+
   ADDB(RGW_ADDB_REQUEST_TO_MOTR_ID, addb_logger.get_id(), m0_sm_id_get(&op->op_sm));
   m0_op_launch(&op, 1);
   rc = m0_op_wait(op, M0_BITS(M0_OS_FAILED, M0_OS_STABLE), M0_TIME_NEVER) ?:
@@ -2476,14 +2680,12 @@ int MotrObject::delete_mobj(const DoutPrefixProvider *dpp)
   if (rc < 0) {
     ldpp_dout(dpp, 0) << __func__ << ": ERROR: failed to open motr object. rc = " << rc << dendl;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_DELETE_MOBJ,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_DELETE_MOBJ, RGW_ADDB_PHASE_ERROR);
     return rc;
   }
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_DELETE_MOBJ,
-       RGW_ADDB_PHASE_DONE);
+       RGW_ADDB_FUNC_DELETE_MOBJ, RGW_ADDB_PHASE_DONE);
 
   this->close_mobj();
 
@@ -2501,6 +2703,7 @@ void MotrObject::close_mobj()
 int MotrObject::write_mobj(const DoutPrefixProvider *dpp, bufferlist&& in_buffer, uint64_t offset)
 {
   int rc;
+  uint32_t flags = M0_OOF_FULL;
   int64_t bs, left;
   struct m0_op *op;
   char *start, *p;
@@ -2511,14 +2714,12 @@ int MotrObject::write_mobj(const DoutPrefixProvider *dpp, bufferlist&& in_buffer
   bufferlist data = std::move(in_buffer);
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_WRITE_MOBJ,
-       RGW_ADDB_PHASE_START);
+       RGW_ADDB_FUNC_WRITE_MOBJ, RGW_ADDB_PHASE_START);
 
   left = data.length();
   if (left == 0) {
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_WRITE_MOBJ,
-	 RGW_ADDB_PHASE_DONE);
+         RGW_ADDB_FUNC_WRITE_MOBJ, RGW_ADDB_PHASE_DONE);
     
     return 0;
   }
@@ -2568,10 +2769,10 @@ int MotrObject::write_mobj(const DoutPrefixProvider *dpp, bufferlist&& in_buffer
   if (rc != 0) {
     ldpp_dout(dpp, 0) <<__func__<< ": buffer allocation failed, rc =" << rc << dendl;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_WRITE_MOBJ,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_WRITE_MOBJ, RGW_ADDB_PHASE_ERROR);
     goto out;
   }
+
   ldpp_dout(dpp, 20) <<__func__<< ": left=" << left << " bs=" << bs << dendl;
   if (io_ctxt.accumulated_buffer_list.size() > 0) {
     // We have IO buffers accumulated. Transform it into single buffer.
@@ -2591,8 +2792,9 @@ int MotrObject::write_mobj(const DoutPrefixProvider *dpp, bufferlist&& in_buffer
   start = data.c_str();
   for (p = start; left > 0; left -= bs, p += bs, offset += bs) {
     if (left < bs) {
-      bs = this->get_optimal_bs(left);
-      mobj->ob_entity.en_flags |= (M0_ENF_NO_RMW | M0_ENF_GEN_DI);
+      mobj->ob_entity.en_flags |= M0_ENF_GEN_DI;
+      bs = this->get_optimal_bs(left, true);
+      flags |= M0_OOF_LAST;
     }
     if (left < bs) {
       ldpp_dout(dpp, 20) <<__func__<< " left ="<< left << ",bs=" << bs << ", Padding [" << (bs - left) << "] bytes" << dendl;
@@ -2608,12 +2810,11 @@ int MotrObject::write_mobj(const DoutPrefixProvider *dpp, bufferlist&& in_buffer
     ldpp_dout(dpp, 20) <<__func__<< ": write buffer bytes=[" << bs << "], at offset=[" << offset << "]" << dendl;
     op = nullptr;
     this->mobj->ob_entity.en_flags |= M0_ENF_GEN_DI;
-    rc = m0_obj_op(this->mobj, M0_OC_WRITE, &ext, &buf, &attr, 0, 0, &op);
+    rc = m0_obj_op(this->mobj, M0_OC_WRITE, &ext, &buf, &attr, 0, flags, &op);
     if (rc != 0) {
-      ldpp_dout(dpp, 0) <<__func__<< ": write failed, m0_obj_op rc = "<< rc << dendl;
+      ldpp_dout(dpp, 0) <<__func__<< ": write failed, m0_obj_op rc="<< rc << dendl;
       ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	   RGW_ADDB_FUNC_WRITE_MOBJ,
-	   RGW_ADDB_PHASE_ERROR);
+           RGW_ADDB_FUNC_WRITE_MOBJ, RGW_ADDB_PHASE_ERROR);
       goto out;
     }
     ADDB(RGW_ADDB_REQUEST_TO_MOTR_ID, addb_logger.get_id(), m0_sm_id_get(&op->op_sm));
@@ -2623,18 +2824,15 @@ int MotrObject::write_mobj(const DoutPrefixProvider *dpp, bufferlist&& in_buffer
     m0_op_fini(op);
     m0_op_free(op);
     if (rc != 0) {
-      ldpp_dout(dpp, 0) <<__func__<< ": write failed, m0_op_wait rc = "<< rc << dendl;
+      ldpp_dout(dpp, 0) <<__func__<< ": write failed, m0_op_wait rc="<< rc << dendl;
       ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	   RGW_ADDB_FUNC_WRITE_MOBJ,
-	   RGW_ADDB_PHASE_ERROR);
+           RGW_ADDB_FUNC_WRITE_MOBJ, RGW_ADDB_PHASE_ERROR);
       goto out;
     }
   }
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_WRITE_MOBJ,
-       RGW_ADDB_PHASE_DONE);
-
+       RGW_ADDB_FUNC_WRITE_MOBJ, RGW_ADDB_PHASE_DONE);
 out:
   m0_indexvec_free(&ext);
   m0_bufvec_free(&attr);
@@ -2648,18 +2846,18 @@ out:
 int MotrObject::read_mobj(const DoutPrefixProvider* dpp, int64_t start, int64_t end, RGWGetDataCB* cb)
 {
   int rc;
+  uint32_t flags = 0;
   unsigned bs, skip;
   int64_t left = end + 1, off;
+  uint64_t req_id;
   struct m0_op *op;
   struct m0_bufvec buf;
   struct m0_bufvec attr;
   struct m0_indexvec ext;
-  uint64_t req_id;
 
   req_id = addb_logger.get_id();
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_READ_MOBJ,
-       RGW_ADDB_PHASE_START);
+       RGW_ADDB_FUNC_READ_MOBJ, RGW_ADDB_PHASE_START);
 
   ldpp_dout(dpp, 20) <<__func__<< ": start=" << start << " end=" << end << dendl;
 
@@ -2669,8 +2867,7 @@ int MotrObject::read_mobj(const DoutPrefixProvider* dpp, int64_t start, int64_t 
   if (rc < 0) {
     ldpp_dout(dpp, 0) <<__func__<< ": vecs alloc failed: rc="<< rc << dendl;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-         RGW_ADDB_FUNC_READ_MOBJ,
-         RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_READ_MOBJ, RGW_ADDB_PHASE_ERROR);
     goto out;
   }
 
@@ -2678,14 +2875,27 @@ int MotrObject::read_mobj(const DoutPrefixProvider* dpp, int64_t start, int64_t 
 
   for (off = 0; left > 0; left -= bs, off += bs) {
     if (left < bs)
-      bs = this->get_optimal_bs(left);
+      bs = this->get_optimal_bs(left); // multiple of groups
+
     if (start >= off + bs)
       continue; // to the next block
+
+    // At the last parity group we must read up to the last
+    // object's unit and provide the M0_OOF_LAST flag, so
+    // that in case of degraded read mode, libmotr could
+    // know which units to use for the data recovery.
+    if ((size_t)off + bs >= obj_size) {
+      bs = roundup(obj_size - off, get_unit_sz());
+      flags |= M0_OOF_LAST;
+      ldpp_dout(dpp, 20) <<__func__<< ": off=" << off << " bs=" << bs << " obj_size=" << obj_size << dendl;
+    } else if (left < bs) {
+      // Somewhere in the middle of the object.
+      bs = this->get_optimal_bs(left, true); // multiple of units
+    }
+
+    // Skip reading the units which are not requested.
     if (start > off) {
-      // Skip reading the units which are not requested.
-      // Note: offset must be aligned to the unit size.
-      unsigned unit_sz = get_unit_sz();
-      skip = rounddown(start, unit_sz) - off;
+      skip = rounddown(start, get_unit_sz()) - off;
       off += skip;
       bs -= skip;
       left -= skip;
@@ -2702,14 +2912,14 @@ int MotrObject::read_mobj(const DoutPrefixProvider* dpp, int64_t start, int64_t 
 
     op = nullptr;
     this->mobj->ob_entity.en_flags |= M0_ENF_GEN_DI;
-    rc = m0_obj_op(this->mobj, M0_OC_READ, &ext, &buf, &attr, 0, 0, &op);
+    rc = m0_obj_op(this->mobj, M0_OC_READ, &ext, &buf, &attr, 0, flags, &op);
     if (rc != 0) {
       ldpp_dout(dpp, 0) <<__func__<< ": motr op failed: rc=" << rc << dendl;
       ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-           RGW_ADDB_FUNC_READ_MOBJ,
-           RGW_ADDB_PHASE_ERROR);
+           RGW_ADDB_FUNC_READ_MOBJ, RGW_ADDB_PHASE_ERROR);
       goto out;
     }
+
     ADDB(RGW_ADDB_REQUEST_TO_MOTR_ID, addb_logger.get_id(), m0_sm_id_get(&op->op_sm));
     m0_op_launch(&op, 1);
     rc = m0_op_wait(op, M0_BITS(M0_OS_FAILED, M0_OS_STABLE), M0_TIME_NEVER) ?:
@@ -2719,8 +2929,7 @@ int MotrObject::read_mobj(const DoutPrefixProvider* dpp, int64_t start, int64_t 
     if (rc != 0) {
       ldpp_dout(dpp, 0) <<__func__<< ": m0_op_wait failed: rc=" << rc << dendl;
       ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-           RGW_ADDB_FUNC_READ_MOBJ,
-           RGW_ADDB_PHASE_ERROR);
+           RGW_ADDB_FUNC_READ_MOBJ, RGW_ADDB_PHASE_ERROR);
       goto out;
     }
 
@@ -2728,15 +2937,21 @@ int MotrObject::read_mobj(const DoutPrefixProvider* dpp, int64_t start, int64_t 
     skip = 0;
     if (start > off)
       skip = start - off;
-    cb->handle_data(bl, skip, (left < bs ? left : bs) - skip);
+    if(cb){
+      ldpp_dout(dpp, 20) <<__func__<< ": return data, skip=" << skip
+                         << " bs=" << bs << " left=" << left << dendl;
+      cb->handle_data(bl, skip, (left < bs ? left : bs) - skip);
+      if (rc != 0){
+        ldpp_dout(dpp, 0) <<__func__<< ": handle_data failed rc=" << rc << dendl;
+        goto out;
+      }
+    }
 
     addb_logger.set_id(req_id);
   }
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_READ_MOBJ,
-       RGW_ADDB_PHASE_DONE);
-
+       RGW_ADDB_FUNC_READ_MOBJ, RGW_ADDB_PHASE_DONE);
 out:
   m0_indexvec_free(&ext);
   m0_bufvec_free(&attr);
@@ -3031,6 +3246,7 @@ int MotrObject::get_part_objs(const DoutPrefixProvider* dpp,
       ldpp_dout(dpp, 20) << __func__ << ": off = " << off << ", size = " << part_size << dendl;
       mobj->part_off = off;
       mobj->part_size = part_size;
+      mobj->set_obj_size(part_size);
       mobj->part_num = part_num;
       mobj->meta = mmpart->meta;
 
@@ -3110,9 +3326,10 @@ unsigned MotrObject::get_unit_sz()
   return m0_obj_layout_id_to_unit_size(lid);
 }
 
-// The optimal bs will be rounded up to the unit size, so
-// use M0_ENF_NO_RMW flag to avoid RMW for the last block.
-unsigned MotrObject::get_optimal_bs(unsigned len)
+// The optimal bs will be rounded up to the unit size, if last is true,
+// so use M0_OOF_LAST flag to avoid RMW for the last block.
+// Otherwise, bs will be rounded up to the group size.
+unsigned MotrObject::get_optimal_bs(unsigned len, bool last)
 {
   struct m0_pool_version *pver;
 
@@ -3140,8 +3357,10 @@ unsigned MotrObject::get_optimal_bs(unsigned len)
   max_bs = roundup(max_bs, grp_sz); // multiple of group size
   if (len >= max_bs)
     return max_bs;
-  else
+  else if (last)
     return roundup(len, unit_sz);
+  else
+    return roundup(len, grp_sz);
 }
 
 void MotrAtomicWriter::cleanup()
@@ -3175,10 +3394,11 @@ unsigned MotrAtomicWriter::populate_bvec(unsigned len, bufferlist::iterator &bi)
   return done;
 }
 
-int MotrAtomicWriter::write()
+int MotrAtomicWriter::write(bool last)
 {
   int rc;
-  int64_t bs, left;
+  uint32_t flags = M0_OOF_FULL;
+  int64_t bs, done, left;
   struct m0_op *op;
   bufferlist::iterator bi;
 
@@ -3187,8 +3407,7 @@ int MotrAtomicWriter::write()
   addb_logger.set_id(req_id);
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_WRITE,
-       RGW_ADDB_PHASE_START);
+       RGW_ADDB_FUNC_WRITE, RGW_ADDB_PHASE_START);
   
   if (!obj.is_opened()) {
     rc = obj.create_mobj(dpp, left);
@@ -3205,18 +3424,17 @@ int MotrAtomicWriter::write()
     }
   }
 
-  total_data_size += left;
-
-  bs = obj.get_optimal_bs(left);
-  ldpp_dout(dpp, 20) <<__func__<< ": left=" << left << " bs=" << bs << dendl;
-
+  bs = obj.get_optimal_bs(left, last);
+  ldpp_dout(dpp, 20) <<__func__<< ": left=" << left << " bs=" << bs
+                               << " last=" << last << dendl;
   bi = acc_data.begin();
   while (left > 0) {
     if (left < bs) {
-      bs = obj.get_optimal_bs(left);
-      obj.mobj->ob_entity.en_flags |= (M0_ENF_NO_RMW | M0_ENF_GEN_DI);
+      if (!last)
+        break; // accumulate more data
+      bs = obj.get_optimal_bs(left, last);
     }
-    if (left < bs) {
+    if (left < bs) { // align data to unit-size
       ldpp_dout(dpp, 20) <<__func__<< " Padding [" << (bs - left) << "] bytes" << dendl;
       acc_data.append_zero(bs - left);
       auto off = bi.get_off();
@@ -3225,19 +3443,20 @@ int MotrAtomicWriter::write()
       acc_data.clear();
       acc_data.append(tmp.c_str(), bs); // make it a single buf
       bi = acc_data.begin();
-      left = bs;
     }
     ldpp_dout(dpp, 20) <<__func__<< ": left=" << left << " bs=" << bs << dendl;
-    left -= this->populate_bvec(bs, bi);
+    done = this->populate_bvec(bs, bi);
+
+    if (last)
+      flags |= M0_OOF_LAST;
 
     op = nullptr;
     obj.mobj->ob_entity.en_flags |= M0_ENF_GEN_DI;
-    rc = m0_obj_op(obj.mobj, M0_OC_WRITE, &ext, &buf, &attr, 0, 0, &op);
+    rc = m0_obj_op(obj.mobj, M0_OC_WRITE, &ext, &buf, &attr, 0, flags, &op);
     if (rc != 0) {
-      ldpp_dout(dpp, 0) <<__func__<< ": write failed, m0_obj_op rc = "<< rc << dendl;
+      ldpp_dout(dpp, 0) <<__func__<< ": write failed, m0_obj_op rc="<< rc << dendl;
       ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	   RGW_ADDB_FUNC_WRITE,
-	   RGW_ADDB_PHASE_ERROR);
+           RGW_ADDB_FUNC_WRITE, RGW_ADDB_PHASE_ERROR);
       goto err;
     }
 
@@ -3249,23 +3468,35 @@ int MotrAtomicWriter::write()
     m0_op_fini(op);
     m0_op_free(op);
     if (rc != 0) {
-      ldpp_dout(dpp, 0) <<__func__<< ": write failed, m0_op_wait rc = "<< rc << dendl;
+      ldpp_dout(dpp, 0) <<__func__<< ": write failed, m0_op_wait rc="<< rc << dendl;
       goto err;
     }
+
+    total_data_size += left < done ? left : done;
+    left            -= left < done ? left : done;
   }
-  acc_data.clear();
+
+  if (last) {
+    acc_data.clear();
+  } else if (bi.get_remaining() < acc_data.length()) {
+    // Clear from the accumulator what has been written already.
+    // XXX Optimise this, if possible, to avoid copying.
+    ldpp_dout(dpp, 0) <<__func__<< ": cleanup "<< acc_data.length() -
+                                                  bi.get_remaining()
+                                << " bytes from the accumulator" << dendl;
+    bufferlist tmp;
+    bi.copy(bi.get_remaining(), tmp);
+    acc_data.clear();
+    acc_data.append(std::move(tmp));
+  }
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_WRITE,
-       RGW_ADDB_PHASE_DONE);
-
+       RGW_ADDB_FUNC_WRITE, RGW_ADDB_PHASE_DONE);
   return 0;
 
 err:
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_WRITE,
-       RGW_ADDB_PHASE_ERROR);
-
+       RGW_ADDB_FUNC_WRITE, RGW_ADDB_PHASE_ERROR);
   this->cleanup();
   return rc;
 }
@@ -3281,7 +3512,7 @@ int MotrAtomicWriter::process(bufferlist&& data, uint64_t offset)
   if (data.length() == 0) { // last call, flush data
     int rc = 0;
     if (acc_data.length() != 0)
-      rc = this->write();
+      rc = this->write(true);
     this->cleanup();
     return rc;
   }
@@ -3384,7 +3615,7 @@ int MotrAtomicWriter::complete(size_t accounted_size, const std::string& etag,
   addb_logger.set_id(req_id);
 
   if (acc_data.length() != 0) { // check again, just in case
-    rc = this->write();
+    rc = this->write(true);
     this->cleanup();
     if (rc != 0)
       return rc;
@@ -3417,19 +3648,23 @@ int MotrAtomicWriter::complete(size_t accounted_size, const std::string& etag,
   }
   RGWBucketInfo &info = obj.get_bucket()->get_info();
 
-  // Set version and current flag in case of both versioning enabled and suspended case.
-  if (info.versioned())
-    ent.flags = rgw_bucket_dir_entry::FLAG_VER | rgw_bucket_dir_entry::FLAG_CURRENT;
-  ldpp_dout(dpp, 20) <<__func__<< ": key=" << obj.get_key().to_str()
-                    << " etag: " << etag << " user_data=" << user_data << dendl;
-  if (user_data)
-    ent.meta.user_data = *user_data;
-
   if (!obj.get_key().have_instance()) {
     // generate-version-id for null version.
     obj.gen_rand_obj_instance_name();
     ent.key.instance = "null";
    }
+
+  // Set version and current flag in case of both versioning enabled and suspended case.
+  if (info.versioned())
+    ent.flags = rgw_bucket_dir_entry::FLAG_VER | rgw_bucket_dir_entry::FLAG_CURRENT;
+
+  ldpp_dout(dpp, 20) << __func__ << ": key=" << obj.get_key().to_str() << ", meta:oid=[0x" << std::hex << obj.meta.oid.u_hi
+                                 << ":0x" << obj.meta.oid.u_lo << "], meta:pvid=[0x" << std::hex << obj.meta.pver.f_container
+                                 << ":0x" << obj.meta.pver.f_key << "], meta:layout_id=0x" << std::hex << obj.meta.layout_id
+                                 << " etag=" << etag << " user_data=" << user_data << dendl;
+  if (user_data)
+    ent.meta.user_data = *user_data;
+
   ent.encode(bl);
 
   if (info.obj_lock_enabled() && info.obj_lock.has_rule()) {
@@ -3445,8 +3680,7 @@ int MotrAtomicWriter::complete(size_t accounted_size, const std::string& etag,
   }
   encode(attrs, bl);
   obj.meta.encode(bl);
-  ldpp_dout(dpp, 20) <<__func__<< ": lid=0x" << std::hex << obj.meta.layout_id
-                                                           << dendl;
+
   // Update existing object version entries in a bucket,
   // in case of both versioning enabled and suspended.
   if (info.versioned()) {
@@ -3850,9 +4084,10 @@ int MotrMultipartUpload::list_parts(const DoutPrefixProvider *dpp, CephContext *
 
     ldpp_dout(dpp, 20) << __func__ << ": part_num=" << info.num
                                              << " part_size=" << info.size << dendl;
-    ldpp_dout(dpp, 20) << __func__ << ": meta:oid=[" << meta.oid.u_hi << "," << meta.oid.u_lo
-                                              << "], meta:pvid=[" << meta.pver.f_container << "," << meta.pver.f_key
-                                              << "], meta:layout id=" << meta.layout_id << dendl;
+    ldpp_dout(dpp, 20) << __func__ << ": key=" << mp_obj.get_key() << ", meta:oid=[0x" << std::hex << meta.oid.u_hi
+                                   << ":0x" << std::hex << meta.oid.u_lo << "], meta:pvid=[0x" << std::hex
+                                   << meta.pver.f_container << ":0x" << std::hex << meta.pver.f_key
+                                   << "], meta:layout_id=0x" << std::hex << meta.layout_id << dendl;
 
     if ((int)info.num > marker) {
       last_num = info.num;
@@ -4833,8 +5068,7 @@ int MotrStore::do_idx_op(struct m0_idx *idx, enum m0_idx_opcode opcode,
   struct m0_op *op = nullptr;
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_DO_IDX_OP,
-       RGW_ADDB_PHASE_START);
+       RGW_ADDB_FUNC_DO_IDX_OP, RGW_ADDB_PHASE_START);
   rc = m0_bufvec_empty_alloc(&k, 1);
   if (rc != 0) {
     ldout(cctx, 0) << __func__ <<": ERROR: failed to allocate key bufvec. rc =" << rc << dendl;
@@ -4850,8 +5084,7 @@ int MotrStore::do_idx_op(struct m0_idx *idx, enum m0_idx_opcode opcode,
       ldout(cctx, 0) << __func__ << ": ERROR: failed to allocate value bufvec, rc = " << rc << dendl;
       rc = -ENOMEM;
       ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	   RGW_ADDB_FUNC_DO_IDX_OP,
-	   RGW_ADDB_PHASE_ERROR);
+           RGW_ADDB_FUNC_DO_IDX_OP, RGW_ADDB_PHASE_ERROR);
       goto out;
     }
   }
@@ -4870,8 +5103,7 @@ int MotrStore::do_idx_op(struct m0_idx *idx, enum m0_idx_opcode opcode,
   if (rc != 0) {
     ldout(cctx, 0) << __func__ << ": ERROR: failed to init index op: " << rc << dendl;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_DO_IDX_OP,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_DO_IDX_OP, RGW_ADDB_PHASE_ERROR);
     goto out;
   }
 
@@ -4885,8 +5117,7 @@ int MotrStore::do_idx_op(struct m0_idx *idx, enum m0_idx_opcode opcode,
   if (rc != 0) {
     ldout(cctx, 0) << __func__ << ": ERROR: op failed: " << rc << dendl;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_DO_IDX_OP,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_DO_IDX_OP, RGW_ADDB_PHASE_ERROR);
     goto out;
   }
 
@@ -4894,8 +5125,7 @@ int MotrStore::do_idx_op(struct m0_idx *idx, enum m0_idx_opcode opcode,
     ldout(cctx, 0) << __func__ << ": ERROR: idx op failed: " << rc_i << dendl;
     rc = rc_i;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_DO_IDX_OP,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_DO_IDX_OP, RGW_ADDB_PHASE_ERROR);
     goto out;
   }
 
@@ -4905,9 +5135,7 @@ int MotrStore::do_idx_op(struct m0_idx *idx, enum m0_idx_opcode opcode,
   }
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_DO_IDX_OP,
-       RGW_ADDB_PHASE_DONE);
-
+       RGW_ADDB_FUNC_DO_IDX_OP, RGW_ADDB_PHASE_DONE);
 out:
   m0_bufvec_free2(&k);
   if (opcode == M0_IC_GET)
@@ -4931,16 +5159,14 @@ int MotrStore::do_idx_next_op(struct m0_idx *idx,
   struct m0_op *op = nullptr;
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_DO_IDX_NEXT_OP,
-       RGW_ADDB_PHASE_START);
+       RGW_ADDB_FUNC_DO_IDX_NEXT_OP, RGW_ADDB_PHASE_START);
 
   rc = m0_bufvec_empty_alloc(&k, nr_kvp)?:
        m0_bufvec_empty_alloc(&v, nr_kvp);
   if (rc != 0) {
     ldout(cctx, 0) << __func__ << ": ERROR: failed to allocate kv bufvecs" << dendl;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_DO_IDX_NEXT_OP,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_DO_IDX_NEXT_OP, RGW_ADDB_PHASE_ERROR);
     return rc;
   }
 
@@ -4950,8 +5176,7 @@ int MotrStore::do_idx_next_op(struct m0_idx *idx,
   if (rc != 0) {
     ldout(cctx, 0) << __func__ << ": ERROR: failed to init index op: " << rc << dendl;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_DO_IDX_NEXT_OP,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_DO_IDX_NEXT_OP, RGW_ADDB_PHASE_ERROR);
     goto out;
   }
 
@@ -4965,8 +5190,7 @@ int MotrStore::do_idx_next_op(struct m0_idx *idx,
   if (rc != 0) {
     ldout(cctx, 0) << __func__ << ": ERROR: op failed: " << rc << dendl;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_DO_IDX_NEXT_OP,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_DO_IDX_NEXT_OP, RGW_ADDB_PHASE_ERROR);
     goto out;
   }
 
@@ -4983,9 +5207,7 @@ int MotrStore::do_idx_next_op(struct m0_idx *idx,
   }
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_DO_IDX_NEXT_OP,
-       RGW_ADDB_PHASE_DONE);
-
+       RGW_ADDB_FUNC_DO_IDX_NEXT_OP, RGW_ADDB_PHASE_DONE);
 out:
   k.ov_vec.v_nr = i;
   v.ov_vec.v_nr = i;
@@ -5041,7 +5263,7 @@ int MotrStore::next_query_by_name(string idx_name,
       if (!delim.empty())
         pos = key.find(delim, prefix.length());
       if (pos != std::string::npos) { // DIR entry
-        dir.assign(key, 0, pos + 1);
+        dir.assign(key, 0, pos + delim.length());
         if (dir.compare(0, prefix.length(), prefix) != 0)
           goto out;
         if (i + k == 0 || dir != key_out[i + k - 1]) // a new one
@@ -5078,7 +5300,7 @@ int MotrStore::next_query_by_name(string idx_name,
 
 out:
   m0_idx_fini(&idx);
-  return rc <= 0 ? rc : i + k;
+  return rc < 0 ? rc : i + k;
 }
 
 int MotrStore::delete_motr_idx_by_name(string iname)
@@ -5090,8 +5312,7 @@ int MotrStore::delete_motr_idx_by_name(string iname)
   ldout(cctx, 20) << __func__ << ": iname=" << iname << dendl;
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_DELETE_IDX_BY_NAME,
-       RGW_ADDB_PHASE_START);
+       RGW_ADDB_FUNC_DELETE_IDX_BY_NAME, RGW_ADDB_PHASE_START);
 
   index_name_to_motr_fid(iname, &idx_id);
   m0_idx_init(&idx, &container.co_realm, &idx_id);
@@ -5100,8 +5321,7 @@ int MotrStore::delete_motr_idx_by_name(string iname)
   if (rc < 0) {
     ldout(cctx, 0) << __func__ <<": m0_entity_delete failed, rc = " << rc << dendl;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_DELETE_IDX_BY_NAME,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_DELETE_IDX_BY_NAME, RGW_ADDB_PHASE_ERROR);
     goto out;
   }
 
@@ -5120,17 +5340,14 @@ int MotrStore::delete_motr_idx_by_name(string iname)
   else if (rc < 0) {
     ldout(cctx, 0) << __func__ << ": ERROR: index create failed. rc = " << rc << dendl;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_DELETE_IDX_BY_NAME,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_DELETE_IDX_BY_NAME, RGW_ADDB_PHASE_ERROR);
     goto out;
   }
 
   ldout(cctx, 20) << __func__ << ": delete_motr_idx_by_name rc =" << rc << dendl;
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_DELETE_IDX_BY_NAME,
-       RGW_ADDB_PHASE_DONE);
-
+       RGW_ADDB_FUNC_DELETE_IDX_BY_NAME, RGW_ADDB_PHASE_DONE);
 out:
   ldout(cctx, 20) << "delete_motr_idx_by_name rc=" << rc << dendl;
   m0_idx_fini(&idx);
@@ -5210,8 +5427,7 @@ int MotrStore::create_motr_idx_by_name(string iname)
   struct m0_uint128 id;
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_CREATE_IDX_BY_NAME,
-       RGW_ADDB_PHASE_START);
+       RGW_ADDB_FUNC_CREATE_IDX_BY_NAME, RGW_ADDB_PHASE_START);
 
   index_name_to_motr_fid(iname, &id);
   m0_idx_init(&idx, &container.co_realm, &id);
@@ -5222,10 +5438,10 @@ int MotrStore::create_motr_idx_by_name(string iname)
   if (rc != 0) {
     ldout(cctx, 0) << __func__ << ": ERROR: m0_entity_create() failed, rc= " << rc << dendl;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_CREATE_IDX_BY_NAME,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_CREATE_IDX_BY_NAME, RGW_ADDB_PHASE_ERROR);
     goto out;
   }
+
   ADDB(RGW_ADDB_REQUEST_TO_MOTR_ID, addb_logger.get_id(), m0_sm_id_get(&op->op_sm));
   m0_op_launch(&op, 1);
   rc = m0_op_wait(op, M0_BITS(M0_OS_FAILED, M0_OS_STABLE), M0_TIME_NEVER) ?:
@@ -5236,15 +5452,12 @@ int MotrStore::create_motr_idx_by_name(string iname)
   if (rc != 0 && rc != -EEXIST) {
     ldout(cctx, 0) << __func__ << ": ERROR: index create failed, rc = " << rc << dendl;
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-	 RGW_ADDB_FUNC_CREATE_IDX_BY_NAME,
-	 RGW_ADDB_PHASE_ERROR);
+         RGW_ADDB_FUNC_CREATE_IDX_BY_NAME, RGW_ADDB_PHASE_ERROR);
     goto out;
   }
 
   ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(), 
-       RGW_ADDB_FUNC_CREATE_IDX_BY_NAME,
-       RGW_ADDB_PHASE_DONE);
-
+       RGW_ADDB_FUNC_CREATE_IDX_BY_NAME, RGW_ADDB_PHASE_DONE);
 out:
   m0_idx_fini(&idx);
   return rc;
