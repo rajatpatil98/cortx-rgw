@@ -2527,7 +2527,7 @@ int MotrObject::create_mobj(const DoutPrefixProvider *dpp, uint64_t sz)
   m0_obj_init(mobj, &store->container.co_realm, &meta.oid, lid);
 
   struct m0_op *op = nullptr;
-   mobj->ob_entity.en_flags |= (M0_ENF_META | M0_ENF_GEN_DI);
+  mobj->ob_entity.en_flags |= (M0_ENF_META | M0_ENF_GEN_DI);
   rc = m0_entity_create(nullptr, &mobj->ob_entity, &op);
   if (rc != 0) {
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(),
@@ -2798,7 +2798,6 @@ int MotrObject::write_mobj(const DoutPrefixProvider *dpp, bufferlist&& in_buffer
   start = data.c_str();
   for (p = start; left > 0; left -= bs, p += bs, offset += bs) {
     if (left < bs) {
-      mobj->ob_entity.en_flags |= M0_ENF_GEN_DI;
       bs = this->get_optimal_bs(left, true);
       flags |= M0_OOF_LAST;
     }
