@@ -32,6 +32,7 @@ extern "C" {
 #include "rgw_role.h"
 #include "rgw_multi.h"
 #include "rgw_putobj_processor.h"
+typedef void (*progress_cb)(off_t, void*);
 
 namespace rgw::sal {
 
@@ -503,10 +504,23 @@ struct AccumulateIOCtxt{
 };
 
 class MotrCopyObj_Filter : public RGWGetDataCB {
+private:
+  progress_cb _progress_cb;
+  void *progress_data;
 public:
   virtual int handle_data(bufferlist& bl, off_t bl_ofs, off_t bl_len) override { return 0; }
   MotrCopyObj_Filter() {}
   virtual ~MotrCopyObj_Filter() override {}
+  void set_progress_callback(progress_cb progressCB, void *progressData){
+    this->_progress_cb = progressCB;
+    this->progress_data = progressData;
+  }
+  progress_cb get_progress_cb(){
+    return this->_progress_cb;
+  }
+  void *get_progress_data(){
+    return this->progress_data;
+  }
 };
 
 class MotrCopyObj_CB : public MotrCopyObj_Filter
@@ -608,6 +622,7 @@ class MotrObject : public Object {
         MotrDeleteOp(MotrObject* _source, RGWObjectCtx* _rctx);
 
         virtual int delete_obj(const DoutPrefixProvider* dpp, optional_yield y) override;
+        int create_delete_marker(const DoutPrefixProvider* dpp, rgw_bucket_dir_entry& ent);
     };
 
     MotrObject() = default;
@@ -667,7 +682,6 @@ class MotrObject : public Object {
     virtual int set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx, Attrs* setattrs, Attrs* delattrs, optional_yield y, rgw_obj* target_obj = NULL) override;
     virtual int get_obj_attrs(RGWObjectCtx* rctx, optional_yield y, const DoutPrefixProvider* dpp, rgw_obj* target_obj = NULL) override;
     int fetch_obj_entry_and_key(const DoutPrefixProvider* dpp, rgw_bucket_dir_entry& ent, std::string& bname, std::string& key, rgw_obj* target_obj);
-    void read_bucket_info(const DoutPrefixProvider* dpp, std::string& bname, std::string& key, rgw_obj* target_obj = NULL);
     virtual int modify_obj_attrs(RGWObjectCtx* rctx, const char* attr_name, bufferlist& attr_val, optional_yield y, const DoutPrefixProvider* dpp) override;
     virtual int delete_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx, const char* attr_name, optional_yield y) override;
     virtual bool is_expired() override;
@@ -733,16 +747,15 @@ class MotrObject : public Object {
     int delete_part_objs(const DoutPrefixProvider* dpp, uint64_t* size_rounded);
     void set_category(RGWObjCategory _category) {category = _category;}
     int get_bucket_dir_ent(const DoutPrefixProvider *dpp, rgw_bucket_dir_entry& ent);
-    int fetch_null_obj(const DoutPrefixProvider *dpp, bufferlist& bl, bool raise_error=true);
-    int fetch_null_obj_reference(
-      const DoutPrefixProvider *dpp, std::string& prev_null_obj_key, bool raise_error=true);
-    int update_null_reference(const DoutPrefixProvider *dpp, rgw_bucket_dir_entry& ent);
+    int fetch_latest_obj(const DoutPrefixProvider *dpp, bufferlist& bl);
     int update_version_entries(const DoutPrefixProvider *dpp, bool set_is_latest=false);
-    int overwrite_null_obj(const DoutPrefixProvider *dpp);
+    int fetch_null_obj(const DoutPrefixProvider *dpp, std::string& key, bufferlist *bl=NULL);
+    int remove_null_obj(const DoutPrefixProvider *dpp);
     int remove_mobj_and_index_entry(const DoutPrefixProvider* dpp, rgw_bucket_dir_entry& ent,
                                     std::string delete_key, std::string bucket_index_iname,
                                     std::string bucket_name);
     uint64_t get_processed_bytes() { return processed_bytes; }
+    std::string get_key_str();
 };
 
 // A placeholder locking class for multipart upload.
@@ -914,6 +927,7 @@ class MotrMultipartUpload : public MultipartUpload {
   ceph::real_time mtime;
   rgw_placement_rule placement;
   RGWObjManifest manifest;
+  std::string version_id;
 
 public:
   MotrMultipartUpload(MotrStore* _store, Bucket* _bucket, const std::string& oid,
@@ -922,6 +936,8 @@ public:
        }
   virtual ~MotrMultipartUpload() = default;
 
+  void set_version_id(std::string _version_id) { version_id = _version_id; };
+  std::string get_version_id() { return version_id; };
   virtual const std::string& get_meta() const { return mp_obj.get_meta(); }
   virtual const std::string& get_key() const { return mp_obj.get_key(); }
   virtual const std::string& get_upload_id() const { return mp_obj.get_upload_id(); }

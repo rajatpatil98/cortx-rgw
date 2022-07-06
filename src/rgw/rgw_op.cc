@@ -901,7 +901,9 @@ void rgw_build_iam_environment(rgw::sal::Store* store,
     s->env.emplace("aws:UserAgent", i->second);
   }
 
-  i = m.find("QUERY_STRING"); {
+  i = m.find("QUERY_STRING");
+  // Handle non presence of "QUERY_STRING"
+    if (i != m.end()) {
     std::size_t pos = (i->second).find("versionId");
     if( pos != string::npos) {
       std::size_t pos2 = (i->second).find("&", pos);
@@ -1052,17 +1054,14 @@ void RGWGetObjTags::execute(optional_yield y)
   s->object->set_atomic(s->obj_ctx);
 
   op_ret = s->object->get_obj_attrs(s->obj_ctx, y, this);
-  if (op_ret < 0) {
-    ldpp_dout(this, 0) << "ERROR: failed to get obj attrs, obj=" << s->object
-        << " ret=" << op_ret << dendl;
-    return;
-  }
 
-  attrs = s->object->get_attrs();
-  auto tags = attrs.find(RGW_ATTR_TAGS);
-  if(tags != attrs.end()){
-    has_tags = true;
-    tags_bl.append(tags->second);
+  if (op_ret == 0) {
+    attrs = s->object->get_attrs();
+    auto tags = attrs.find(RGW_ATTR_TAGS);
+    if (tags != attrs.end()) {
+      has_tags = true;
+      tags_bl.append(tags->second);
+    }
   }
   send_response_data(tags_bl);
 }
