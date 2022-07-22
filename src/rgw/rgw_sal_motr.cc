@@ -137,6 +137,25 @@ static uint64_t rounddown(uint64_t x, uint64_t by)
   return x / by * by;
 }
 
+int parse_tags(const DoutPrefixProvider* dpp, bufferlist& tags_bl, struct req_state* s)
+{
+  std::unique_ptr<RGWObjTags> obj_tags;
+  if (s->info.env->exists("HTTP_X_AMZ_TAGGING")) {
+    auto tag_str = s->info.env->get("HTTP_X_AMZ_TAGGING");
+    obj_tags = std::make_unique<RGWObjTags>();
+    int ret = obj_tags->set_from_string(tag_str);
+    if (ret < 0) {
+      ldpp_dout(dpp, 0) <<__func__<< ": setting obj tags failed with rc=" << ret << dendl;
+      if (ret == -ERR_INVALID_TAG) {
+        ret = -EINVAL; //s3 returns only -EINVAL for PUT requests
+      }
+      return ret;
+    }
+    obj_tags->encode(tags_bl);
+  }
+  return 0;
+}
+
 std::string base62_encode(uint64_t value, size_t pad)
 {
   // Integer to Base62 encoding table. Characters are sorted in
@@ -1140,6 +1159,7 @@ int MotrBucket::check_quota(const DoutPrefixProvider *dpp,
   int rc = quota_handler->check_quota(dpp, info.owner, info.bucket,
                                       user_quota, bucket_quota,
                                       check_size_only ? 0 : 1, obj_size, y);
+  RGWQuotaHandler::free_handler(quota_handler);
   return rc;
 }
 
@@ -1306,22 +1326,23 @@ int MotrBucket::list(const DoutPrefixProvider *dpp, ListParams& params, int max,
         rgw_bucket_dir_entry ent;
         auto iter = vals[i].cbegin();
         ent.decode(iter);
+        rgw_obj_key key(ent.key);
         if (params.list_versions || ent.is_visible()) {
-          if (ent.key.name == params.marker.name &&
+          if (key.name == params.marker.name &&
               // filter out versions which go before marker.instance
               ((!null_ent.key.empty() && params.marker.instance == "null" &&
                  null_ent.meta.mtime < ent.meta.mtime) ||
-               (ent.key.instance != "" &&
-                ent.key.instance < params.marker.instance)))
+               (key.instance != "" &&
+                key.instance < params.marker.instance)))
             continue;
 check_keycount:
           if (keycount >= max) {
             if (!null_ent.key.empty() &&
                 (null_ent.key.name != ent.key.name ||
                  null_ent.meta.mtime > ent.meta.mtime))
-              results.next_marker = rgw_obj_key(ent.key.name, "null");
+              results.next_marker = rgw_obj_key(key.name, "null");
             else
-              results.next_marker = rgw_obj_key(ent.key.name, ent.key.instance);
+              results.next_marker = rgw_obj_key(key.name, key.instance);
             results.is_truncated = true;
             break;
           }
@@ -1332,7 +1353,7 @@ check_keycount:
               (null_ent.key.name != ent.key.name ||
                null_ent.meta.mtime > ent.meta.mtime)) {
             if (params.marker.instance != "" &&
-                ent.key.instance == params.marker.instance)
+                key.instance == params.marker.instance)
               null_ent.key = {}; // filtered out by the marker
             else {
               results.objs.emplace_back(std::move(null_ent));
@@ -1340,7 +1361,7 @@ check_keycount:
               goto check_keycount;
             }
           }
-          if (ent.key.instance == "")
+          if (key.instance == "")
             null_ent = std::move(ent);
           else {
             results.objs.emplace_back(std::move(ent));
@@ -1426,7 +1447,7 @@ int MotrBucket::list_multiparts(const DoutPrefixProvider *dpp,
     if (prefix.size() &&
         (0 != key.name.compare(0, prefix.size(), prefix))) {
       ldpp_dout(dpp, 20) <<__func__<<
-        ": skippping \"" << ent.key <<
+        ": skippping \"" << key <<
         "\" because doesn't match prefix" << dendl;
       continue;
     }
@@ -1591,7 +1612,8 @@ int MotrObject::fetch_obj_entry_and_key(const DoutPrefixProvider* dpp, rgw_bucke
   else
     bname = get_bucket_name(this->get_bucket()->get_tenant(), this->get_bucket()->get_name());
 
-  key = ent.key.name + '\a' + ent.key.instance;
+  rgw_obj_key objkey(ent.key);
+  key = objkey.name + '\a' + objkey.instance;
 
   ldpp_dout(dpp, 20) <<__func__<< ": bucket=" << bname << " key=" << key << dendl;
 
@@ -1967,7 +1989,8 @@ int MotrObject::MotrDeleteOp::delete_obj(const DoutPrefixProvider* dpp, optional
   // we should consider adding object entry to GC before deleting the metadata.
   // Delete from the cache first.
   source->store->get_obj_meta_cache()->remove(dpp, delete_key);
-
+  ldpp_dout(dpp, 20) << __func__ << ": Deleting key " << delete_key << " from "
+                            << tenant_bkt_name << dendl;
   // Remove the motr object.
   // versioning enabled and suspended case.
   if (info.versioned()) {
@@ -1976,20 +1999,18 @@ int MotrObject::MotrDeleteOp::delete_obj(const DoutPrefixProvider* dpp, optional
       result.version_id = ent.key.instance;
       if (ent.is_delete_marker())
         result.delete_marker = true;
-      ldpp_dout(dpp, 20) << "delete " << delete_key << " from "
-                            << tenant_bkt_name << dendl;
 
       rc = source->remove_mobj_and_index_entry(
           dpp, ent, delete_key, bucket_index_iname, tenant_bkt_name);
       if (rc < 0) {
-        ldpp_dout(dpp, 0) << "Failed to delete the object from Motr."
-	                          <<" key=" << delete_key << dendl;
+        ldpp_dout(dpp, 0) << __func__ << ": Failed to delete the object from Motr."
+                          <<" key=" << delete_key << dendl;
         return rc;
       }
       // if deleted object version is the latest version,
       // then update is-latest flag to true for previous version.
       if (ent.is_current()) {
-        ldpp_dout(dpp, 20) << "Updating previous version entries " << dendl;
+        ldpp_dout(dpp, 20) << __func__ << ": Updating previous version entries " << dendl;
         bool set_is_latest=true;
         rc = source->update_version_entries(dpp, set_is_latest);
         if (rc < 0)
@@ -2005,7 +2026,7 @@ int MotrObject::MotrDeleteOp::delete_obj(const DoutPrefixProvider* dpp, optional
       if (!info.versioning_enabled()) {
         result.version_id = "";
         if (ent.is_delete_marker() && ent.key.instance == "") {
-          ldpp_dout(dpp, 0) << "null-delete-marker is already present." << dendl;
+          ldpp_dout(dpp, 0) << __func__ << ": null-delete-marker is already present." << dendl;
           return 0;
         }
         // if latest version is null version, then delete the null version-object and
@@ -2016,7 +2037,7 @@ int MotrObject::MotrDeleteOp::delete_obj(const DoutPrefixProvider* dpp, optional
           rc = source->remove_mobj_and_index_entry(
             dpp, ent, delete_key, bucket_index_iname, tenant_bkt_name);
           if (rc < 0) {
-            ldpp_dout(dpp, 0) << "Failed to delete the object from Motr, key="<< delete_key << dendl;
+            ldpp_dout(dpp, 0) <<  __func__ << ": Failed to delete the object from Motr, key="<< delete_key << dendl;
             return rc;
           }
         }
@@ -2024,7 +2045,7 @@ int MotrObject::MotrDeleteOp::delete_obj(const DoutPrefixProvider* dpp, optional
 
       source->set_instance(result.version_id);
       // update is-latest=false for current version entry.
-      ldpp_dout(dpp, 20) << "Updating previous version entries " << dendl;
+      ldpp_dout(dpp, 20) << __func__ << ": Updating previous version entries " << dendl;
       rc = source->update_version_entries(dpp);
       if (rc < 0)
         return rc;
@@ -2036,8 +2057,6 @@ int MotrObject::MotrDeleteOp::delete_obj(const DoutPrefixProvider* dpp, optional
       result.version_id = "null"; // show it as "null" in the reply
   } else {
     // Unversioned flow
-    // handling empty size object case
-    ldpp_dout(dpp, 20) << "delete " << delete_key << " from " << tenant_bkt_name << dendl;
     rc = source->remove_mobj_and_index_entry(
         dpp, ent, delete_key, bucket_index_iname, tenant_bkt_name);
     if (rc < 0) {
@@ -2221,7 +2240,7 @@ int MotrObject::copy_object_same_zone(RGWObjectCtx& obj_ctx,
     const char* if_nomatch,
     AttrsMod attrs_mod,
     bool copy_if_newer,
-    Attrs& attrs,
+    Attrs& new_attrs,
     RGWObjCategory category,
     uint64_t olh_epoch,
     boost::optional<ceph::real_time> delete_at,
@@ -2309,7 +2328,7 @@ int MotrObject::copy_object_same_zone(RGWObjectCtx& obj_ctx,
   bufferlist bl;
   rc = read_op->get_attr(dpp, RGW_ATTR_ETAG, bl, y);
   if (rc < 0){
-    ldpp_dout(dpp, 20) << "ERROR: read op iterate failed rc=" << rc << dendl;
+    ldpp_dout(dpp, 0) <<__func__<< ": ERROR: read op for etag failed rc=" << rc << dendl;
     return rc;
   }
   string etag_str;
@@ -2317,6 +2336,29 @@ int MotrObject::copy_object_same_zone(RGWObjectCtx& obj_ctx,
 
   if(etag){
     *etag = etag_str;
+  }
+
+  //Set object tags based on tagging-directive
+  struct req_state* s = static_cast<req_state*>(obj_ctx.get_private());
+  auto tagging_drctv = s->info.env->get("HTTP_X_AMZ_TAGGING_DIRECTIVE");
+
+  bufferlist tags_bl;
+  if (tagging_drctv) {
+    if (strcasecmp(tagging_drctv, "COPY") == 0) {
+      rc = read_op->get_attr(dpp, RGW_ATTR_TAGS, tags_bl, y);
+      if (rc < 0) {
+        ldpp_dout(dpp, 0) <<__func__<< ": ERROR: read op for object tags failed rc=" << rc << dendl;
+        return rc;
+      }
+    } else if (strcasecmp(tagging_drctv, "REPLACE") == 0) {
+      ldpp_dout(dpp, 20) <<__func__<< ": Parse tag values for object: " << dest_object->get_key().to_str() << dendl;
+      int r = parse_tags(dpp, tags_bl, s);
+      if (r < 0) {
+        ldpp_dout(dpp, 0) <<__func__<< ": ERROR: Parsing object tags failed rc=" << rc << dendl;
+        return r;
+      }
+    }
+  attrs[RGW_ATTR_TAGS] = tags_bl;
   }
 
   real_time del_time;
@@ -3041,10 +3083,10 @@ int MotrObject::fetch_latest_obj(const DoutPrefixProvider *dpp, bufferlist& bl_o
 
     auto iter = bl.cbegin();
     ent.decode(iter);
-
-    ldpp_dout(dpp, 20) <<__func__<< ": ent.key=" << ent.key.to_string()
+    rgw_obj_key key(ent.key);
+    ldpp_dout(dpp, 20) <<__func__<< ": key=" << key.to_str()
                        << " is_current=" << ent.is_current() << dendl;
-    if (ent.key.name != this->get_name())
+    if (key.name != this->get_name())
       break;
 
     if (null_ent.key.empty())
@@ -3066,6 +3108,7 @@ int MotrObject::get_bucket_dir_ent(const DoutPrefixProvider *dpp, rgw_bucket_dir
   string bucket_index_iname = "motr.rgw.bucket.index." + tenant_bkt_name;
   bufferlist bl;
   bufferlist::const_iterator iter;
+  rgw_obj_key key;
   std::string obj_key = this->get_key_str();
 
   if (this->have_instance()) {
@@ -3093,8 +3136,8 @@ int MotrObject::get_bucket_dir_ent(const DoutPrefixProvider *dpp, rgw_bucket_dir
 
   iter = bl.cbegin();
   ent.decode(iter);
-
-  obj_key = ent.key.name + '\a' + ent.key.instance;
+  key.set(ent.key);
+  obj_key = key.name + '\a' + key.instance;
 
   // Put into the cache
   this->store->get_obj_meta_cache()->put(dpp, obj_key, bl);
@@ -3165,8 +3208,8 @@ int MotrObject::update_version_entries(const DoutPrefixProvider *dpp, bool set_i
     else
       ent.flags = rgw_bucket_dir_entry::FLAG_VER;
   }
-
-  string key = ent.key.name + '\a' + ent.key.instance;
+  rgw_obj_key objkey(ent.key);
+  string key = objkey.name + '\a' + objkey.instance;
 
   // Remove from the cache.
   store->get_obj_meta_cache()->remove(dpp, key);
@@ -3693,7 +3736,6 @@ int MotrMultipartUpload::delete_parts(const DoutPrefixProvider *dpp, std::string
 {
   int rc;
   int max_parts = 1000;
-  int total_parts_fetched = 0;
   uint64_t total_size = 0, total_size_rounded = 0;
   int marker = 0;
   bool truncated = false;
@@ -3710,7 +3752,6 @@ int MotrMultipartUpload::delete_parts(const DoutPrefixProvider *dpp, std::string
       return rc;
 
     std::map<uint32_t, std::unique_ptr<MultipartPart>>& parts = this->get_parts();
-    total_parts_fetched += parts.size();
     for (auto part_iter = parts.begin(); part_iter != parts.end(); ++part_iter) {
 
       MultipartPart *mpart = part_iter->second.get();
@@ -3756,10 +3797,10 @@ int MotrMultipartUpload::delete_parts(const DoutPrefixProvider *dpp, std::string
     *size_rounded = total_size_rounded;
 
   if (get_upload_id().length()) {
-    // Subtract size & count of all the parts if multipart is not completed.
+    // Subtract size & object count if multipart is not completed.
     rc = update_bucket_stats(dpp, store,
                              bucket->get_acl_owner().get_id().to_str(), tenant_bkt_name,
-                             total_size, total_size_rounded, total_parts_fetched, false);
+                             total_size, total_size_rounded, 1, false);
     if (rc != 0) {
       ldpp_dout(dpp, 20) <<__func__<< ": Failed stats substraction for the "
         << "bucket/obj=" << tenant_bkt_name << "/" << mp_obj.get_key()
@@ -3881,25 +3922,15 @@ int MotrMultipartUpload::init(const DoutPrefixProvider *dpp, optional_yield y,
     ent.meta.mtime = ceph::real_clock::now();
     ent.meta.user_data.assign(mpbl.c_str(), mpbl.c_str() + mpbl.length());
     ent.encode(bl);
-    std::unique_ptr<RGWObjTags> obj_tags;
     req_state *s = (req_state *) obj_ctx->get_private();
-    /* handle object tagging */
-    // Verify tags exists and add to attrs
-    if (s->info.env->exists("HTTP_X_AMZ_TAGGING")){
-      auto tag_str = s->info.env->get("HTTP_X_AMZ_TAGGING");
-      obj_tags = std::make_unique<RGWObjTags>();
-      int ret = obj_tags->set_from_string(tag_str);
-      if (ret < 0){
-        ldpp_dout(dpp, 0) << "setting obj tags failed with rc=" << ret << dendl;
-        if (ret == -ERR_INVALID_TAG){
-          ret = -EINVAL; //s3 returns only -EINVAL for PUT requests
-        }
-        return ret;
-      }
-      bufferlist tags_bl;
-      obj_tags->encode(tags_bl);
-      attrs[RGW_ATTR_TAGS] = tags_bl;
+    bufferlist tags_bl;
+    ldpp_dout(dpp, 20) <<__func__<< ": Parse tag values for object: " << obj->get_key().to_str() << dendl;
+    int r = parse_tags(dpp, tags_bl, s);
+    if (r < 0) {
+      ldpp_dout(dpp, 0) <<__func__<< "ERROR: Parsing object tags failed rc=" << r << dendl;
+      return r;
     }
+    attrs[RGW_ATTR_TAGS] = tags_bl;
     encode(attrs, bl);
     // Insert an entry into bucket multipart index so it is not shown
     // when listing a bucket.
@@ -3925,10 +3956,20 @@ int MotrMultipartUpload::init(const DoutPrefixProvider *dpp, optional_yield y,
   rc = store->create_motr_idx_by_name(obj_part_iname);
   if (rc == -EEXIST)
     rc = 0;
-  if (rc < 0)
+  if (rc < 0) {
     // TODO: clean the bucket index entry
     ldpp_dout(dpp, 0) << "Failed to create object multipart index  " << obj_part_iname << dendl;
+    return rc;
+  }
 
+  // Add one to the object_count of the current bucket stats
+  // Size will be added when parts are uploaded
+  rc = update_bucket_stats(dpp, store, owner.get_id().to_str(), tenant_bkt_name, 0, 0, 1, true);
+  if (rc != 0) {
+    ldpp_dout(dpp, 20) <<__func__<< ": Failed to update object count for the "
+      << "bucket/obj=" << tenant_bkt_name << "/" << mp_obj.get_key()
+      << ", rc=" << rc << dendl;
+  }
   return rc;
 }
 
@@ -3960,7 +4001,8 @@ int MotrMultipartUpload::list_parts(const DoutPrefixProvider *dpp, CephContext *
       return ret_rc;
 
     if (!ent.is_delete_marker()) {
-      key_name = ent.key.name + '\a' + ent.key.instance;
+      rgw_obj_key key(ent.key);
+      key_name = key.name + '\a' + key.instance;
       rc = store->get_upload_id(tenant_bkt_name, key_name, upload_id);
       if (rc < 0) {
         ldpp_dout(dpp, 0) <<__func__<< ": ERROR: get_upload_id failed. rc=" << rc << dendl;
@@ -4110,23 +4152,6 @@ int MotrMultipartUpload::complete(const DoutPrefixProvider *dpp,
       hash.Update((const unsigned char *)petag, sizeof(petag));
       ldpp_dout(dpp, 20) <<__func__<< ": calc etag " << dendl;
 
-      string oid = mp_obj.get_part(part->num);
-      rgw_obj src_obj;
-      src_obj.init_ns(bucket->get_key(), oid, mp_ns);
-
-#if 0 // does Motr backend need it?
-      /* update manifest for part */
-      if (part->manifest.empty()) {
-        ldpp_dout(dpp, 0) <<__func__<< ": ERROR: empty manifest for object part: obj="
-			 << src_obj << dendl;
-        rc = -ERR_INVALID_PART;
-        return rc;
-      } else {
-        manifest.append(dpp, part->manifest, store->get_zone());
-      }
-      ldpp_dout(dpp, 0) <<__func__<< ": manifest " << dendl;
-#endif
-
       bool part_compressed = (part->cs_info.compression_type != "none");
       if ((handled_parts > 0) &&
           ((part_compressed != compressed) ||
@@ -4157,14 +4182,6 @@ int MotrMultipartUpload::complete(const DoutPrefixProvider *dpp,
         cs_info.orig_size += part->cs_info.orig_size;
         compressed = true;
       }
-
-      // We may not need to do the following as remove_objs are those
-      // don't show when listing a bucket. As we store in-progress uploaded
-      // object's metadata in a separate index, they are not shown when
-      // listing a bucket.
-      rgw_obj_index_key remove_key;
-      src_obj.key.get_index_key(&remove_key);
-      remove_objs.push_back(remove_key);
 
       off += part_size;
       accounted_size += part->accounted_size;
@@ -4269,20 +4286,6 @@ int MotrMultipartUpload::complete(const DoutPrefixProvider *dpp,
     return rc;
   }
   store->get_obj_meta_cache()->put(dpp, tobj_key, update_bl);
-
-  // Increment size & count for new multipart obj in bucket stats entry.
-  std::string bkt_owner = target_obj->get_bucket()->get_acl_owner().get_id().to_str();
-  rc = update_bucket_stats(dpp, store, bkt_owner, tenant_bkt_name,
-                           0, 0, total_parts - 1, false);
-  if (rc != 0) {
-    ldpp_dout(dpp, 20) <<__func__<< ": Failed stats update for the "
-      << "bucket/obj=" << tenant_bkt_name << "/" << target_obj->get_key().to_str()
-      << ", rc=" << rc << dendl;
-    return rc;
-  }
-  ldpp_dout(dpp, 70) <<__func__<< ": Updated stats successfully for the "
-      << "bucket/obj=" << tenant_bkt_name << "/" << target_obj->get_key().to_str()
-      << ", rc=" << rc << dendl;
 
   ldpp_dout(dpp, 20) <<__func__<< ": remove from bucket multipart index " << dendl;
   return store->do_idx_op_by_name(bucket_multipart_iname,
@@ -4430,7 +4433,6 @@ int MotrMultipartWriter::complete(size_t accounted_size, const std::string& etag
   info.accounted_size = accounted_size;
   info.modified = real_clock::now();
   uint64_t old_part_size = 0, old_part_size_rounded = 0;
-  bool old_part_exist = false;
 
   bool compressed;
   int rc = rgw_compression_info_from_attrset(attrs, compressed, info.cs_info);
@@ -4480,7 +4482,6 @@ int MotrMultipartWriter::complete(size_t accounted_size, const std::string& etag
     ldpp_dout(dpp, 20) <<__func__<< ": Old part with oid [" << oid_str << "] exists" << dendl;
     old_part_size = old_part_info.accounted_size;
     old_part_size_rounded = old_part_info.size_rounded;
-    old_part_exist = true;
     // Delete old object
     rc = old_mobj->delete_mobj(dpp);
     if (rc == 0) {
@@ -4496,13 +4497,13 @@ int MotrMultipartWriter::complete(size_t accounted_size, const std::string& etag
     ldpp_dout(dpp, 0) <<__func__<< ": failed to add part obj in part index, rc=" << rc << dendl;
     return rc == -ENOENT ? -ERR_NO_SUCH_UPLOAD : rc;
   }
-
-   rc = update_bucket_stats(dpp, store,
+   
+  // update size without changing the object count
+  rc = update_bucket_stats(dpp, store,
                            head_obj->get_bucket()->get_acl_owner().get_id().to_str(),
                            tenant_bkt_name,
                            actual_part_size - old_part_size,
-                           size_rounded - old_part_size_rounded,
-                           1 - old_part_exist);
+                           size_rounded - old_part_size_rounded, 0, true);
   if (rc != 0) {
     ldpp_dout(dpp, 20) <<__func__<< ": Failed stats update for the "
       << "obj/part=" << head_obj->get_key().to_str() << "/" << part_num
