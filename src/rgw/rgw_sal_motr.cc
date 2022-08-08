@@ -1300,6 +1300,24 @@ int MotrBucket::list(const DoutPrefixProvider *dpp, ListParams& params, int max,
     }
   }
 
+  // Return an error in case of invalid version-id-marker
+  bufferlist bl;
+  std::string marker_key;
+  ceph::real_time marker_mtime;
+
+  if (params.marker.instance == "null")
+    marker_key = params.marker.name + '\a';
+  else
+    marker_key = params.marker.name + '\a' + params.marker.instance;
+
+  if (params.marker.instance != "") {
+    rc = store->do_idx_op_by_name(bucket_index_iname, M0_IC_GET, marker_key, bl);
+    if (rc < 0) {
+      ldpp_dout(dpp, 0) <<__func__<< ": ERROR: invalid version-id-marker, rc=" << rc << dendl;
+      return -EINVAL;
+    }
+  }
+
   results.is_truncated = false;
   int keycount=0; // how many keys we've put to the results so far
   std::string next_key;
@@ -1328,13 +1346,25 @@ int MotrBucket::list(const DoutPrefixProvider *dpp, ListParams& params, int max,
         ent.decode(iter);
         rgw_obj_key key(ent.key);
         if (params.list_versions || ent.is_visible()) {
-          if (key.name == params.marker.name &&
-              // filter out versions which go before marker.instance
-              ((!null_ent.key.empty() && params.marker.instance == "null" &&
-                 null_ent.meta.mtime < ent.meta.mtime) ||
-               (key.instance != "" &&
-                key.instance < params.marker.instance)))
-            continue;
+          if (key.name == params.marker.name) {
+            // skip the object for non-versioned bucket
+            if (!(ent.flags & rgw_bucket_dir_entry::FLAG_VER)) 
+              continue;
+            // filter out versions which go before marker.instance
+            if (params.marker.instance != "") {
+              // Check if params.marker.instance is null
+              if (params.marker.instance == "null") {  
+                  if ((!null_ent.key.empty() && null_ent.meta.mtime < ent.meta.mtime))
+                    continue;               
+              } else {
+                if (key.instance != "" && key.instance < params.marker.instance) {
+                  if(null_ent.meta.mtime >= ent.meta.mtime)
+                    marker_mtime = null_ent.meta.mtime;
+                  continue;
+                }
+              }
+            }
+          }
 check_keycount:
           if (keycount >= max) {
             if (!null_ent.key.empty() &&
@@ -1356,9 +1386,11 @@ check_keycount:
                 key.instance == params.marker.instance)
               null_ent.key = {}; // filtered out by the marker
             else {
-              results.objs.emplace_back(std::move(null_ent));
-              keycount++;
-              goto check_keycount;
+              if (null_ent.meta.mtime != marker_mtime) {
+                results.objs.emplace_back(std::move(null_ent));
+                keycount++;
+                goto check_keycount;
+              }
             }
           }
           if (key.instance == "")
@@ -1382,8 +1414,10 @@ check_keycount:
   }
 
   if (!null_ent.key.empty() && !results.is_truncated) {
-    if (keycount < max)
-      results.objs.emplace_back(std::move(null_ent));
+    if (keycount < max) {
+      if (null_ent.meta.mtime != marker_mtime)
+          results.objs.emplace_back(std::move(null_ent));
+    }
     else { // there was no more records in the bucket
       results.next_marker = rgw_obj_key(null_ent.key.name, "null");
       results.is_truncated = true;
@@ -1552,12 +1586,16 @@ int MotrObject::get_obj_state(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
   if (state == nullptr)
     state = new RGWObjState();
   *_state = state;
-
+  req_state* s = static_cast<req_state*>(rctx->get_private());
   // Get object's metadata (those stored in rgw_bucket_dir_entry).
   rgw_bucket_dir_entry ent;
   int rc = this->get_bucket_dir_ent(dpp, ent);
-  if (rc < 0)
+  if (rc < 0) {
+    if(rc == -ENOENT) {
+        s->err.message = "The specified key does not exist.";
+    }
     return rc;
+  }
 
   // Set object's type.
   this->category = ent.meta.category;
@@ -1849,6 +1887,8 @@ int MotrObject::MotrReadOp::prepare(optional_yield y, const DoutPrefixProvider* 
   source->category = ent.meta.category;
   *params.lastmod = ent.meta.mtime;
 
+  req_state* s = static_cast<req_state*>(rctx->get_private());
+
   if (params.mod_ptr || params.unmod_ptr) {
     // Convert all times go GMT to make them compatible
     obj_time_weight src_weight;
@@ -1864,7 +1904,8 @@ int MotrObject::MotrReadOp::prepare(optional_yield y, const DoutPrefixProvider* 
       ldpp_dout(dpp, 10) <<__func__<< ": If-Modified-Since: " << dest_weight << " & "
                          << "Last-Modified: " << src_weight << dendl;
       if (!(dest_weight < src_weight)) {
-        return -ERR_NOT_MODIFIED;
+        s->err.message = "At least one of the pre-conditions you specified did not hold ";
+        return -ERR_PRECONDITION_FAILED;
       }
     }
 
@@ -1874,6 +1915,7 @@ int MotrObject::MotrReadOp::prepare(optional_yield y, const DoutPrefixProvider* 
       ldpp_dout(dpp, 10) <<__func__<< ": If-UnModified-Since: " << dest_weight << " & "
                          << "Last-Modified: " << src_weight << dendl;
       if (dest_weight < src_weight) {
+        s->err.message = "At least one of the pre-conditions you specified did not hold ";
         return -ERR_PRECONDITION_FAILED;
       }
     }
@@ -1884,6 +1926,7 @@ int MotrObject::MotrReadOp::prepare(optional_yield y, const DoutPrefixProvider* 
     ldpp_dout(dpp, 10) <<__func__<< ": ETag: " << etag << " & "
                        << "If-Match: " << if_match_str << dendl;
     if (if_match_str.compare(etag) != 0) {
+     s->err.message = "At least one of the pre-conditions you specified did not hold ";
       return -ERR_PRECONDITION_FAILED;
     }
   }
@@ -1893,7 +1936,8 @@ int MotrObject::MotrReadOp::prepare(optional_yield y, const DoutPrefixProvider* 
     ldpp_dout(dpp, 10) <<__func__<< ": ETag: " << etag << " & "
                        << "If-NoMatch: " << if_nomatch_str << dendl;
     if (if_nomatch_str.compare(etag) == 0) {
-      return -ERR_NOT_MODIFIED;
+      s->err.message = "At least one of the pre-conditions you specified did not hold ";
+      return -ERR_PRECONDITION_FAILED;
     }
   }
   return 0;
