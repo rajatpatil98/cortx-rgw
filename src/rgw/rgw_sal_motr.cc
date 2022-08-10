@@ -1651,7 +1651,15 @@ int MotrObject::fetch_obj_entry_and_key(const DoutPrefixProvider* dpp, rgw_bucke
     bname = get_bucket_name(this->get_bucket()->get_tenant(), this->get_bucket()->get_name());
 
   rgw_obj_key objkey(ent.key);
-  key = objkey.name + '\a' + objkey.instance;
+
+  // Remove the "null" from instance to avoid "VersionId" field in the response
+  // and overwrite the existing null object entry.
+  if (ent.key.instance == "null") {
+    ent.key.instance = "";
+    key = objkey.name + '\a';
+  }
+  else
+    key = objkey.name + '\a' + objkey.instance;
 
   ldpp_dout(dpp, 20) <<__func__<< ": bucket=" << bname << " key=" << key << dendl;
 
@@ -1660,9 +1668,6 @@ int MotrObject::fetch_obj_entry_and_key(const DoutPrefixProvider* dpp, rgw_bucke
 
 int MotrObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx, Attrs* setattrs, Attrs* delattrs, optional_yield y, rgw_obj* target_obj)
 {
-  // TODO : Set tags for multipart objects
-  if (this->category == RGWObjCategory::MultiMeta)
-    return 0;
 
   rgw_bucket_dir_entry ent;
   string bname, key;
@@ -1694,7 +1699,6 @@ int MotrObject::set_obj_attrs(const DoutPrefixProvider* dpp, RGWObjectCtx* rctx,
   bufferlist update_bl;
   string bucket_index_iname = "motr.rgw.bucket.index." + bname;
 
-  ent.meta.mtime = ceph::real_clock::now();
   ent.encode(update_bl);
   encode(attrs, update_bl);
   meta.encode(update_bl);
@@ -3182,6 +3186,11 @@ int MotrObject::get_bucket_dir_ent(const DoutPrefixProvider *dpp, rgw_bucket_dir
   ent.decode(iter);
   key.set(ent.key);
   obj_key = key.name + '\a' + key.instance;
+
+  // Set the instance value as "null" to show
+  // the VersionId field in the GET/HEAD object response
+  if (this->get_key().have_null_instance())
+    ent.key.instance = "null";
 
   // Put into the cache
   this->store->get_obj_meta_cache()->put(dpp, obj_key, bl);
