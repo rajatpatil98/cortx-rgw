@@ -1508,10 +1508,59 @@ int MotrBucket::abort_multiparts(const DoutPrefixProvider *dpp, CephContext *cct
   return 0;
 }
 
-void MotrStore::finalize(void)
-{
+void MotrStore::finalize(void) {
+  // stop gc worker threads
+  stop_gc();
   // close connection with motr
   m0_client_fini(this->instance, true);
+}
+
+MotrStore& MotrStore::set_run_gc_thread(bool _use_gc_threads) {
+  use_gc_threads = _use_gc_threads;
+  return *this;
+}
+
+MotrStore& MotrStore::set_use_cache(bool _use_cache) {
+  use_cache = _use_cache;
+  return *this;
+}
+
+int MotrStore::initialize(CephContext *cct, const DoutPrefixProvider *dpp) {
+  // Create metadata objects and set enabled=use_cache value
+  int rc = init_metadata_cache(dpp, cct);
+  if (rc != 0) {
+    ldpp_dout(dpp, 0) << __func__ << ": Metadata cache init failed " <<
+      "with rc = " << rc << dendl;
+    return rc;
+  }
+
+  if (use_gc_threads) {
+    // Create MotrGC object and start GCWorker threads
+    int rc = create_gc();
+    if (rc != 0)
+      ldpp_dout(dpp, 0) << __func__ << ": Failed to Create MotrGC " <<
+        "with rc = " << rc << dendl;
+  }
+  return rc;
+}
+
+int MotrStore::create_gc() {
+  int ret = 0;
+  motr_gc = std::make_unique<MotrGC>(cctx, this);
+  ret = motr_gc->initialize();
+  if (ret < 0) {
+    // Failed to initialize MotrGC
+    return ret;
+  }
+  motr_gc->start_processor();
+  return ret;
+}
+
+void MotrStore::stop_gc() {
+  if (motr_gc) {
+    motr_gc->stop_processor();
+    motr_gc->finalize();
+  }
 }
 
 uint64_t MotrStore::get_new_req_id()
@@ -2160,6 +2209,7 @@ int MotrObject::remove_mobj_and_index_entry(
   int rc;
   bufferlist bl;
   uint64_t size_rounded = 0;
+  bool pushed_to_gc = false;
 
   // handling empty size object case
   if (ent.meta.size != 0) {
@@ -2179,7 +2229,22 @@ int MotrObject::remove_mobj_and_index_entry(
         }
       }
       size_rounded = roundup(ent.meta.size, get_unit_sz());
-      rc = this->delete_mobj(dpp);
+      if (store->gc_enabled()) {
+        std::string tag = PRIx64 + std::to_string(this->meta.oid.u_hi) + ":" +
+                          PRIx64 + std::to_string(this->meta.oid.u_lo);
+        std::string obj_fqdn = bucket_name + "/" + delete_key;
+        ::Meta *mobj = reinterpret_cast<::Meta*>(&this->meta);
+        motr_gc_obj_info gc_obj(tag, obj_fqdn, *mobj, std::time(nullptr),
+                                ent.meta.size, size_rounded, false, "");
+        rc = store->get_gc()->enqueue(gc_obj);
+        if (rc == 0) {
+          pushed_to_gc = true;
+          ldpp_dout(dpp, 20) <<__func__<< ": Pushed the delete req for OID="
+            << tag << " to the motr garbage collector." << dendl;
+        }
+      }
+      if (! pushed_to_gc)
+        rc = this->delete_mobj(dpp);
     }
     if (rc < 0) {
       ldpp_dout(dpp, 0) << "Failed to delete the object " << delete_key  <<" from Motr." << dendl;
@@ -4778,6 +4843,17 @@ int MotrStore::store_email_info(const DoutPrefixProvider *dpp, optional_yield y,
   return rc;
 }
 
+int MotrStore::list_gc_objs(std::vector<std::unordered_map<std::string, std::string>>& gc_entries)
+{
+  auto gc = new MotrGC(cctx, this);
+  int rc = gc->list(gc_entries);
+  if (rc < 0) {
+    ldout(cctx, 0) <<__func__<< ": failed to list gc items: rc=" << rc << dendl;
+  }
+  delete gc;
+  return rc;
+}
+
 std::unique_ptr<Object> MotrStore::get_object(const rgw_obj_key& k)
 {
   return std::make_unique<MotrObject>(this, k);
@@ -5445,7 +5521,7 @@ std::string MotrStore::get_cluster_id(const DoutPrefixProvider* dpp,  optional_y
 }
 
 int MotrStore::init_metadata_cache(const DoutPrefixProvider *dpp,
-                                   CephContext *cct, bool use_cache)
+                                   CephContext *cct)
 {
   this->obj_meta_cache = new MotrMetaCache(dpp, cct);
   this->get_obj_meta_cache()->set_enabled(use_cache);
