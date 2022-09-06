@@ -2717,7 +2717,7 @@ int MotrObject::create_mobj(const DoutPrefixProvider *dpp, uint64_t sz)
   m0_obj_init(mobj, &store->container.co_realm, &meta.oid, lid);
 
   struct m0_op *op = nullptr;
-  mobj->ob_entity.en_flags |= (M0_ENF_META | M0_ENF_GEN_DI);
+  mobj->ob_entity.en_flags |= M0_ENF_META;
   rc = m0_entity_create(nullptr, &mobj->ob_entity, &op);
   if (rc != 0) {
     ADDB(RGW_ADDB_REQUEST_ID, addb_logger.get_id(),
@@ -2793,7 +2793,7 @@ int MotrObject::open_mobj(const DoutPrefixProvider *dpp)
   struct m0_op *op = nullptr;
   mobj->ob_attr.oa_layout_id = meta.layout_id;
   mobj->ob_attr.oa_pver      = meta.pver;
-  mobj->ob_entity.en_flags  |= (M0_ENF_META | M0_ENF_GEN_DI);
+  mobj->ob_entity.en_flags  |= M0_ENF_META;
   ldpp_dout(dpp, 20) <<__func__ << ": key=" << this->get_key().to_str() << ", meta:oid=[0x" << std::hex << meta.oid.u_hi
                                  << ":0x" << meta.oid.u_lo << "], meta:pvid=[0x" << std::hex << meta.pver.f_container
                                  << ":0x" << meta.pver.f_key << "], meta:layout_id=0x" << std::hex << meta.layout_id << dendl;
@@ -2857,7 +2857,7 @@ int MotrObject::delete_mobj(const DoutPrefixProvider *dpp)
 
   // Create an DELETE op and execute it (sync version).
   struct m0_op *op = nullptr;
-  mobj->ob_entity.en_flags |= (M0_ENF_META | M0_ENF_GEN_DI);
+  mobj->ob_entity.en_flags |= M0_ENF_META;
   rc = m0_entity_delete(&mobj->ob_entity, &op);
   if (rc != 0) {
     ldpp_dout(dpp, LOG_ERROR) <<__func__ << ": ERROR: m0_entity_delete() failed. rc=" << rc << dendl;
@@ -3016,7 +3016,6 @@ int MotrObject::write_mobj(const DoutPrefixProvider *dpp, bufferlist&& in_buffer
 
     ldpp_dout(dpp, 20) <<__func__ << ": Write data bytes=[" << bs << "], at offset=[" << offset << "]" << dendl;
     op = nullptr;
-    this->mobj->ob_entity.en_flags |= M0_ENF_GEN_DI;
     rc = m0_obj_op(this->mobj, M0_OC_WRITE, &ext, &buf, &attr, 0, flags, &op);
     if (rc != 0) {
       ldpp_dout(dpp, LOG_ERROR) <<__func__ << ": ERROR: write failed, m0_obj_op rc="<< rc << dendl;
@@ -3118,7 +3117,6 @@ int MotrObject::read_mobj(const DoutPrefixProvider* dpp, int64_t start, int64_t 
     attr.ov_vec.v_count[0] = 0;
 
     op = nullptr;
-    this->mobj->ob_entity.en_flags |= M0_ENF_GEN_DI;
     rc = m0_obj_op(this->mobj, M0_OC_READ, &ext, &buf, &attr, 0, flags, &op);
     if (rc != 0) {
       ldpp_dout(dpp, LOG_ERROR) <<__func__ << ": ERROR: motr op failed: rc=" << rc << dendl;
@@ -3643,7 +3641,6 @@ int MotrAtomicWriter::write(bool last)
       flags |= M0_OOF_LAST;
 
     op = nullptr;
-    obj.mobj->ob_entity.en_flags |= M0_ENF_GEN_DI;
     rc = m0_obj_op(obj.mobj, M0_OC_WRITE, &ext, &buf, &attr, 0, flags, &op);
     if (rc != 0) {
       ldpp_dout(dpp, LOG_ERROR) <<__func__ << ": ERROR: write failed, m0_obj_op rc="<< rc << dendl;
